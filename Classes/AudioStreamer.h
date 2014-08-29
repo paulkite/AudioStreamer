@@ -110,8 +110,6 @@ extern NSString * const ASStatusChangedNotification;
 
 @interface AudioStreamer : NSObject
 {
-	NSURL *url;
-
 	//
 	// Special threading consideration:
 	//	The audioQueue property should only ever be accessed inside a
@@ -120,8 +118,6 @@ extern NSString * const ASStatusChangedNotification;
 	AudioQueueRef audioQueue;
 	AudioFileStreamID audioFileStream;	// the audio file stream parser
 	AudioStreamBasicDescription asbd;	// description of the audio
-	NSThread *internalThread;			// the thread where the download and
-										// audio file stream parsing occurs
 	
 	AudioQueueBufferRef audioQueueBuffer[kNumAQBufs];		// audio queue buffers
 	AudioStreamPacketDescription packetDescs[kAQMaxPacketDescs];	// packet descriptions for enqueuing audio
@@ -145,12 +141,11 @@ extern NSString * const ASStatusChangedNotification;
 	pthread_mutex_t queueBuffersMutex;			// a mutex to protect the inuse flags
 	pthread_cond_t queueBufferReadyCondition;	// a condition varable for handling the inuse flags
 
-	CFReadStreamRef stream;
+	NSInputStream *stream;
 	NSNotificationCenter *notificationCenter;
 	
 	UInt32 bitRate;				// Bits per second in the file
 	NSInteger dataOffset;		// Offset of the first audio packet in the stream
-	NSInteger fileLength;		// Length of the file in bytes
 	NSInteger seekByteOffset;	// Seek offset within the file in bytes
 	UInt64 audioDataByteCount;  // Used when the actual number of audio bytes in
 								// the file is known (more accurate than assuming
@@ -173,6 +168,7 @@ extern NSString * const ASStatusChangedNotification;
 }
 
 @property AudioStreamerErrorCode errorCode;
+@property (nonatomic, assign, readwrite) NSInteger fileLength; // Length of the file in bytes
 @property (readonly) AudioStreamerState state;
 @property (readonly) double progress;
 @property (readonly) double duration;
@@ -180,6 +176,7 @@ extern NSString * const ASStatusChangedNotification;
 @property (readonly) NSDictionary *httpHeaders;
 @property (copy,readwrite) NSString *fileExtension;
 @property (nonatomic) BOOL shouldDisplayAlertOnError; // to control whether the alert is displayed in failWithErrorCode
+@property (nonatomic, strong, readwrite) NSURL *url;
 
 - (id)initWithURL:(NSURL *)aURL;
 - (void)start;
