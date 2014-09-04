@@ -56,55 +56,55 @@
 
 #define kAQMaxPacketDescs 512	// Number of packet descriptions in our array
 
-typedef enum
+typedef NS_ENUM(NSUInteger, AudioStreamerState)
 {
-	AS_INITIALIZED = 0,
-	AS_STARTING_FILE_THREAD,
-	AS_WAITING_FOR_DATA,
-	AS_FLUSHING_EOF,
-	AS_WAITING_FOR_QUEUE_TO_START,
-	AS_PLAYING,
-	AS_BUFFERING,
-	AS_STOPPING,
-	AS_STOPPED,
-	AS_PAUSED
-} AudioStreamerState;
+	AudioStreamerStateInitialized = 0,
+	AudioStreamerStateStartingFileThread,
+	AudioStreamerStateWaitingForData,
+	AudioStreamerStateEOF,
+	AudioStreamerStateWaitingForQueue,
+	AudioStreamerStatePlaying,
+	AudioStreamerStateBuffering,
+	AudioStreamerStateStopping,
+	AudioStreamerStateStopped,
+	AudioStreamerStatePaused
+};
 
-typedef enum
+typedef NS_ENUM(NSUInteger, AudioStreamerStopReason)
 {
-	AS_NO_STOP = 0,
-	AS_STOPPING_EOF,
-	AS_STOPPING_USER_ACTION,
-	AS_STOPPING_ERROR,
-	AS_STOPPING_TEMPORARILY
-} AudioStreamerStopReason;
+	AudioStreamerStopReasonNone = 0,
+	AudioStreamerStopReasonEOF,
+	AudioStreamerStopReasonUserAction,
+	AudioStreamerStopReasonError,
+	AudioStreamerStopReasonTemporary
+};
 
-typedef enum
+typedef NS_ENUM(NSUInteger, AudioStreamerErrorCode)
 {
-	AS_NO_ERROR = 0,
-	AS_NETWORK_CONNECTION_FAILED,
-	AS_FILE_STREAM_GET_PROPERTY_FAILED,
-	AS_FILE_STREAM_SET_PROPERTY_FAILED,
-	AS_FILE_STREAM_SEEK_FAILED,
-	AS_FILE_STREAM_PARSE_BYTES_FAILED,
-	AS_FILE_STREAM_OPEN_FAILED,
-	AS_FILE_STREAM_CLOSE_FAILED,
-	AS_AUDIO_DATA_NOT_FOUND,
-	AS_AUDIO_QUEUE_CREATION_FAILED,
-	AS_AUDIO_QUEUE_BUFFER_ALLOCATION_FAILED,
-	AS_AUDIO_QUEUE_ENQUEUE_FAILED,
-	AS_AUDIO_QUEUE_ADD_LISTENER_FAILED,
-	AS_AUDIO_QUEUE_REMOVE_LISTENER_FAILED,
-	AS_AUDIO_QUEUE_START_FAILED,
-	AS_AUDIO_QUEUE_PAUSE_FAILED,
-	AS_AUDIO_QUEUE_BUFFER_MISMATCH,
-	AS_AUDIO_QUEUE_DISPOSE_FAILED,
-	AS_AUDIO_QUEUE_STOP_FAILED,
-	AS_AUDIO_QUEUE_FLUSH_FAILED,
-	AS_AUDIO_STREAMER_FAILED,
-	AS_GET_AUDIO_TIME_FAILED,
-	AS_AUDIO_BUFFER_TOO_SMALL
-} AudioStreamerErrorCode;
+	AudioStreamerErrorCodeNone = 0,
+	AudioStreamerErrorCodeNetworkConnectionFailed,
+	AudioStreamerErrorCodeFileStreamGetPropertyFailed,
+	AudioStreamerErrorCodeFileStreamSetPropertyFailed,
+	AudioStreamerErrorCodeFileStreamSeekFailed,
+	AudioStreamerErrorCodeFileStreamParseBytesFailed,
+	AudioStreamerErrorCodeFileStreamOpenFailed,
+	AudioStreamerErrorCodeFileStreamCloseFailed,
+	AudioStreamerErrorCodeAudioDataNotFound,
+	AudioStreamerErrorCodeAudioQueueCreationFailed,
+	AudioStreamerErrorCodeAudioQueueBufferAllocationFailed,
+	AudioStreamerErrorCodeAudioQueueEnqueueFailed,
+	AudioStreamerErrorCodeAudioQueueAddListenerFailed,
+	AudioStreamerErrorCodeAudioQueueRemoveListenerFailed,
+	AudioStreamerErrorCodeAudioQueueStartFailed,
+	AudioStreamerErrorCodeAudioQueuePauseFailed,
+	AudioStreamerErrorCodeAudioQueueBufferMismatch,
+	AudioStreamerErrorCodeAudioQueueDisposeFailed,
+	AudioStreamerErrorCodeAudioQueueStopFailed,
+	AudioStreamerErrorCodeAudioQueueFlushFailed,
+	AudioStreamerErrorCodeAudioStreamerFailed,
+	AudioStreamerErrorCodeGetAudioTimeFailed,
+	AudioStreamerErrorCodeAudioBufferTooSmall
+};
 
 extern NSString * const ASStatusChangedNotification;
 
@@ -130,16 +130,9 @@ extern NSString * const ASStatusChangedNotification;
 	NSDictionary *httpHeaders;
 	NSString *fileExtension;
 	
-	AudioStreamerState state;
-	AudioStreamerState laststate;
-	AudioStreamerStopReason stopReason;
-	AudioStreamerErrorCode errorCode;
 	OSStatus err;
 	
 	bool discontinuous;			// flag to indicate middle of the stream
-	
-	pthread_mutex_t queueBuffersMutex;			// a mutex to protect the inuse flags
-	pthread_cond_t queueBufferReadyCondition;	// a condition varable for handling the inuse flags
 
 	NSInputStream *stream;
 	NSNotificationCenter *notificationCenter;
@@ -167,9 +160,12 @@ extern NSString * const ASStatusChangedNotification;
 #endif
 }
 
-@property AudioStreamerErrorCode errorCode;
+@property (nonatomic, assign, readonly) AudioStreamerErrorCode errorCode;
 @property (nonatomic, assign, readwrite) NSInteger fileLength; // Length of the file in bytes
-@property (readonly) AudioStreamerState state;
+@property (nonatomic, assign, readonly) AudioStreamerState lastState;
+@property (nonatomic, assign, readonly) AudioStreamerState state;
+@property (nonatomic, assign, readonly) AudioStreamerStopReason stopReason;
+@property (nonatomic, assign, readwrite) BOOL disablesAudioSessionOnStop;
 @property (readonly) double progress;
 @property (readonly) double duration;
 @property (readwrite) UInt32 bitRate;
@@ -178,7 +174,9 @@ extern NSString * const ASStatusChangedNotification;
 @property (nonatomic) BOOL shouldDisplayAlertOnError; // to control whether the alert is displayed in failWithErrorCode
 @property (nonatomic, strong, readwrite) NSURL *url;
 
-- (id)initWithURL:(NSURL *)aURL;
++ (AudioFileTypeID)hintForFileExtension:(NSString *)fileExtension;
+
+- (instancetype)initWithURL:(NSURL *)aURL;
 - (void)start;
 - (void)stop;
 - (void)pause;
@@ -187,6 +185,7 @@ extern NSString * const ASStatusChangedNotification;
 - (BOOL)isWaiting;
 - (BOOL)isIdle;
 - (BOOL)isAborted; // return YES if streaming halted due to error (AS_STOPPING + AS_STOPPING_ERROR)
+- (BOOL)isStopped;
 - (void)seekToTime:(double)newSeekTime;
 - (double)calculatedBitRate;
 
