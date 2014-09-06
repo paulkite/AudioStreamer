@@ -198,7 +198,7 @@ static void *queueContext = @"internalQueue";
 	internalQueue = dispatch_queue_create(internalQueueToken, DISPATCH_QUEUE_SERIAL);
 	dispatch_queue_set_specific(internalQueue, queueContext, (void *)queueContext, nil);
 	
-	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInterruptionChangeToState:) name:ASAudioSessionInterruptionOccuredNotification object:nil];
+	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInterruptionChangeToState:) name:AVAudioSessionInterruptionNotification object:nil];
 }
 
 //
@@ -633,7 +633,7 @@ static void *queueContext = @"internalQueue";
 	self.state = AudioStreamerStateWaitingForData;
 	
 	[stream setDelegate:self];
-	[stream scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+	[stream scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
 	[stream open];
 	
 	return YES;
@@ -707,7 +707,7 @@ static void *queueContext = @"internalQueue";
 		}
 	#endif
 	
-		// initialize a semaphore so that we can block on buffers in use.
+		// Initialize a semaphore so that we can block on buffers in use.
 		bufferSemaphore = dispatch_semaphore_create(0);
 		
 		if (![self openReadStream])
@@ -794,17 +794,16 @@ static void *queueContext = @"internalQueue";
 		}
 	}
 	
+	bufferSemaphore = nil;
+	
 #if TARGET_OS_IPHONE
-	if (self.disablesAudioSessionOnStop)
+	NSError *error = nil;
+	
+	[[AVAudioSession sharedInstance] setActive:NO error:&error];
+	
+	if (error)
 	{
-		NSError *error = nil;
-		
-		[[AVAudioSession sharedInstance] setActive:NO error:&error];
-		
-		if (error)
-		{
-			NSLog(@"AudioStreamer problem setting audio session inactive: %@", error.debugDescription);
-		}
+		NSLog(@"AudioStreamer problem setting audio session inactive: %@", error.debugDescription);
 	}
 #endif
 	
@@ -833,6 +832,7 @@ static void *queueContext = @"internalQueue";
 		NSAssert([[NSThread currentThread] isEqual:[NSThread mainThread]],
 			@"Playback can only be started from the main thread.");
 		notificationCenter = [NSNotificationCenter defaultCenter];
+		self.errorCode = AudioStreamerErrorCodeNone;
 		self.state = AudioStreamerStateStartingFileThread;
 		
 		__weak AudioStreamer *weakSelf = self;
@@ -958,7 +958,9 @@ static void *queueContext = @"internalQueue";
 {
 	double progress = lastProgress;
 	
-	if (sampleRate > 0 && (self.state == AudioStreamerStateStopping || ![self isFinishing]))
+	if ((sampleRate > 0) &&
+		(self.state == AudioStreamerStateStopping || ![self isFinishing]) &&
+		audioQueue)
 	{
 		if (self.state != AudioStreamerStatePlaying &&
 			self.state != AudioStreamerStatePaused &&
@@ -1381,7 +1383,7 @@ static void *queueContext = @"internalQueue";
 	// wait until next buffer is not in use
 	while (inuse[fillBufferIndex])
 	{
-		dispatch_semaphore_signal(bufferSemaphore);
+		dispatch_semaphore_wait(bufferSemaphore, DISPATCH_TIME_FOREVER);
 	}
 }
 
@@ -1686,7 +1688,7 @@ static void *queueContext = @"internalQueue";
 			// If there was some kind of issue with enqueueBuffer and we didn't
 			// make space for the new audio data then back out
 			//
-			if (bytesFilled + packetSize > packetBufferSize)
+			if ((long long)bytesFilled + packetSize > packetBufferSize)
 			{
 				return;
 			}
@@ -1796,8 +1798,7 @@ static void *queueContext = @"internalQueue";
 		return;
 	}
 	
-	// signal waiting thread that the buffer is free.
-	dispatch_semaphore_wait(bufferSemaphore, DISPATCH_TIME_FOREVER);
+	// Signal waiting thread that the buffer is free.
 	inuse[bufIndex] = false;
 	buffersUsed--;
 
@@ -1894,8 +1895,11 @@ static void *queueContext = @"internalQueue";
 //    inID - the property ID
 //
 - (void)handleInterruptionChangeToState:(NSNotification *)notification {
-    AudioQueuePropertyID inInterruptionState = (AudioQueuePropertyID) [notification.object unsignedIntValue];
-	if (inInterruptionState == kAudioSessionBeginInterruption)
+	
+	AVAudioSessionInterruptionType interruptionType = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+	AVAudioSessionInterruptionOptions options = [notification.userInfo[AVAudioSessionInterruptionOptionKey] unsignedIntegerValue];
+	
+	if (interruptionType == AVAudioSessionInterruptionTypeBegan)
 	{ 
 		if ([self isPlaying]) {
 			[self pause];
@@ -1903,21 +1907,24 @@ static void *queueContext = @"internalQueue";
 			pausedByInterruption = YES; 
 		} 
 	}
-	else if (inInterruptionState == kAudioSessionEndInterruption) 
+	else if (interruptionType == AVAudioSessionInterruptionTypeEnded)
 	{
-		NSError *error = nil;
-		
-		[[AVAudioSession sharedInstance] setActive:YES error:&error];
-		
-		if (error)
+		if (options == AVAudioSessionInterruptionOptionShouldResume)
 		{
-			NSLog(@"AudioStreamer error while setting session to active. ERROR: %@", error.localizedDescription);
-		}
-		
-		if ([self isPaused] && pausedByInterruption) {
-			[self pause]; // this is actually resume
+			NSError *error = nil;
 			
-			pausedByInterruption = NO; // this is redundant 
+			[[AVAudioSession sharedInstance] setActive:YES error:&error];
+			
+			if (error)
+			{
+				NSLog(@"AudioStreamer error while setting session to active. ERROR: %@", error.localizedDescription);
+			}
+			
+			if ([self isPaused] && pausedByInterruption) {
+				[self pause]; // this is actually resume
+				
+				pausedByInterruption = NO; // this is redundant
+			}
 		}
 	}
 }
