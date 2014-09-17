@@ -164,6 +164,7 @@ extern NSString * const ASStatusChangedNotification;
 @property (nonatomic, assign, readwrite) NSInteger fileLength; // Length of the file in bytes
 @property (nonatomic, assign, readonly) AudioStreamerState lastState;
 @property (nonatomic, assign, readonly) AudioStreamerState state;
+@property (nonatomic, assign, readwrite) BOOL shouldStartPaused;
 @property (nonatomic, assign, readonly) AudioStreamerStopReason stopReason;
 @property (readonly) double progress;
 @property (readonly) double duration;

@@ -967,7 +967,7 @@ static void *queueContext = @"internalQueue";
 			self.state != AudioStreamerStateBuffering &&
 			self.state != AudioStreamerStateStopping)
 		{
-			progress = lastProgress;
+			return lastProgress;
 		}
 		
 		AudioTimeStamp queueTime;
@@ -977,7 +977,7 @@ static void *queueContext = @"internalQueue";
 		const OSStatus AudioQueueStopped = 0x73746F70; // 0x73746F70 is 'stop'
 		if (err == AudioQueueStopped)
 		{
-			progress = lastProgress;
+			return lastProgress;
 		}
 		else if (err)
 		{
@@ -1350,6 +1350,14 @@ static void *queueContext = @"internalQueue";
 		{
 			if (self.state == AudioStreamerStateBuffering)
 			{
+				if (self.shouldStartPaused)
+				{
+					self.state = AudioStreamerStatePaused;
+					self.shouldStartPaused = NO;
+					
+					return;
+				}
+				
 				err = AudioQueueStart(audioQueue, NULL);
 				
 				if (err)
@@ -1875,6 +1883,14 @@ static void *queueContext = @"internalQueue";
 				[NSRunLoop currentRunLoop];
 				
 				self.state = AudioStreamerStatePlaying;
+				
+				if (self.shouldStartPaused)
+				{
+					[self pause];
+					self.shouldStartPaused = NO;
+					
+					return;
+				}
 			}
 			else
 			{
