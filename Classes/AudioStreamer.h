@@ -182,6 +182,7 @@ extern NSString * const ASStatusChangedNotification;
 - (void)pause;
 - (BOOL)isPlaying;
 - (BOOL)isPaused;
+- (BOOL)isBuffering;
 - (BOOL)isWaiting;
 - (BOOL)isIdle;
 - (BOOL)isAborted; // return YES if streaming halted due to error (AS_STOPPING + AS_STOPPING_ERROR)

@@ -446,6 +446,17 @@ static void *queueContext = @"internalQueue";
 }
 
 //
+// isBuffering
+//
+// returns YES if the audio queue is buffering.
+//
+
+- (BOOL)isBuffering
+{
+	return (self.state == AudioStreamerStateBuffering);
+}
+
+//
 // isWaiting
 //
 // returns YES if the AudioStreamer is waiting for a state transition of some
@@ -813,6 +824,9 @@ static void *queueContext = @"internalQueue";
 	packetsFilled = 0;
 	seekByteOffset = 0;
 	packetBufferSize = 0;
+	seekByteOffset = 0;
+	seekTime = 0;
+	
 	self.state = AudioStreamerStateInitialized;
 }
 
