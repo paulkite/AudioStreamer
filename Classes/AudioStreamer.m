@@ -974,7 +974,7 @@ static void *queueContext = @"internalQueue";
 	
 	if ((sampleRate > 0) &&
 		(self.state == AudioStreamerStateStopping || ![self isFinishing]) &&
-		audioQueue)
+		audioQueue && stream)
 	{
 		if (self.state != AudioStreamerStatePlaying &&
 			self.state != AudioStreamerStatePaused &&
@@ -993,7 +993,7 @@ static void *queueContext = @"internalQueue";
 		{
 			return lastProgress;
 		}
-		else if (err)
+		else if (err != noErr)
 		{
 			[self failWithErrorCode:AudioStreamerErrorCodeGetAudioTimeFailed];
 		}
