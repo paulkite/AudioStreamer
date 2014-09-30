@@ -198,6 +198,9 @@ static void *queueContext = @"internalQueue";
 	internalQueue = dispatch_queue_create(internalQueueToken, DISPATCH_QUEUE_SERIAL);
 	dispatch_queue_set_specific(internalQueue, queueContext, (void *)queueContext, nil);
 	
+	_mediaType = AudioStreamMediaTypeMusic;
+	_playbackRate = 1.0;
+	
 	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInterruptionChangeToState:) name:AVAudioSessionInterruptionNotification object:nil];
 }
 
@@ -1054,6 +1057,48 @@ static void *queueContext = @"internalQueue";
 }
 
 //
+// setPlaybackRate
+//
+// Modifies the playback rate and applies it to the audio queue if it's available.
+//
+
+- (void)setPlaybackRate:(AudioStreamPlaybackRate)rate
+{
+	if (self.playbackRate != rate)
+	{
+		_playbackRate = rate;
+		
+		if (audioQueue)
+		{
+			err = AudioQueueSetParameter(audioQueue, kAudioQueueParam_PlayRate, [self valueForPlaybackRate:self.playbackRate]);
+		}
+	}
+}
+
+//
+// valueForPlaybackRate
+//
+// Returns a Float64 value for the playback rate specified.
+//
+
+- (Float64)valueForPlaybackRate:(AudioStreamPlaybackRate)rate
+{
+	switch (rate)
+	{
+		case AudioStreamPlaybackRateHalf:
+			return 0.5;
+		case AudioStreamPlaybackRateDouble:
+			return 1.5;
+		case AudioStreamPlaybackRateTriple:
+			return 2.0;
+		default:
+			break;
+	}
+	
+	return 1.0;
+}
+
+//
 // pause
 //
 // A togglable pause function.
@@ -1456,6 +1501,31 @@ static void *queueContext = @"internalQueue";
 		{
 			// No packet size available, just use the default
 			packetBufferSize = kAQDefaultBufSize;
+		}
+	}
+	
+	UInt32 enableTimePitch = 1;
+	
+	err = AudioQueueSetProperty(audioQueue, kAudioQueueProperty_EnableTimePitch, &enableTimePitch, sizeof(UInt32));
+	
+	if (err == noErr)
+	{
+		UInt32 propValue = (self.mediaType == AudioStreamMediaTypeMusic ?
+							kAudioQueueTimePitchAlgorithm_LowQualityZeroLatency :
+							kAudioQueueTimePitchAlgorithm_Spectral);
+		
+		err = AudioQueueSetProperty(audioQueue, kAudioQueueProperty_TimePitchAlgorithm, &propValue, sizeof(UInt32));
+		
+		if (err == noErr)
+		{
+			propValue = 0;
+			
+			err = AudioQueueSetProperty(audioQueue, kAudioQueueProperty_TimePitchBypass, &propValue, sizeof(propValue));
+			
+			if (err == noErr)
+			{
+				err = AudioQueueSetParameter(audioQueue, kAudioQueueParam_PlayRate, [self valueForPlaybackRate:self.playbackRate]);
+			}
 		}
 	}
 

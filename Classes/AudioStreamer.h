@@ -106,6 +106,20 @@ typedef NS_ENUM(NSUInteger, AudioStreamerErrorCode)
 	AudioStreamerErrorCodeAudioBufferTooSmall
 };
 
+typedef NS_ENUM(NSUInteger, AudioStreamMediaType)
+{
+	AudioStreamMediaTypeMusic = 0,
+	AudioStreamMediaTypeSpokenWord
+};
+
+typedef NS_ENUM(NSUInteger, AudioStreamPlaybackRate)
+{
+	AudioStreamPlaybackRateHalf = 0,
+	AudioStreamPlaybackRateNormal,
+	AudioStreamPlaybackRateDouble,
+	AudioStreamPlaybackRateTriple
+};
+
 extern NSString * const ASStatusChangedNotification;
 
 @interface AudioStreamer : NSObject
@@ -163,6 +177,8 @@ extern NSString * const ASStatusChangedNotification;
 @property (nonatomic, assign, readonly) AudioStreamerErrorCode errorCode;
 @property (nonatomic, assign, readwrite) NSInteger fileLength; // Length of the file in bytes
 @property (nonatomic, assign, readonly) AudioStreamerState lastState;
+@property (nonatomic, assign, readwrite) AudioStreamMediaType mediaType;
+@property (nonatomic, assign, readwrite) AudioStreamPlaybackRate playbackRate;
 @property (nonatomic, assign, readonly) AudioStreamerState state;
 @property (nonatomic, assign, readwrite) BOOL shouldStartPaused;
 @property (nonatomic, assign, readonly) AudioStreamerStopReason stopReason;
