@@ -565,6 +565,11 @@ static void *queueContext = @"internalQueue";
 {
 	NSAssert(stream == nil, @"Download stream already initialized");
 	
+	if (!self.url)
+	{
+		return NO;
+	}
+	
 	if (!self.url.isFileURL)
 	{
 		//
@@ -808,6 +813,35 @@ static void *queueContext = @"internalQueue";
 		}
 	}
 	
+	// Clean out the ASBD and packet descriptions. Not doing this causes the time pitch algorithm
+	// to play back different media types at unexpected rates. While cool sounding, not too useful.
+	asbd.mSampleRate = 0;
+	asbd.mFormatID = 0;
+	asbd.mFormatFlags = 0;
+	asbd.mBytesPerPacket = 0;
+	asbd.mFramesPerPacket = 0;
+	asbd.mBytesPerFrame = 0;
+	asbd.mChannelsPerFrame = 0;
+	asbd.mBitsPerChannel = 0;
+	
+	for (int i = 0; i < LENGTH(packetDescs); ++i)
+	{
+		if (packetDescs[i].mStartOffset)
+		{
+			packetDescs[i].mStartOffset = 0;
+		}
+		
+		if (packetDescs[i].mVariableFramesInPacket)
+		{
+			packetDescs[i].mVariableFramesInPacket = 0;
+		}
+		
+		if (packetDescs[i].mDataByteSize)
+		{
+			packetDescs[i].mDataByteSize = 0;
+		}
+	}
+	
 	bufferSemaphore = nil;
 	
 #if TARGET_OS_IPHONE
@@ -830,6 +864,7 @@ static void *queueContext = @"internalQueue";
 	seekByteOffset = 0;
 	seekTime = 0;
 	
+	self.fileExtension = nil;
 	self.state = AudioStreamerStateInitialized;
 }
 
