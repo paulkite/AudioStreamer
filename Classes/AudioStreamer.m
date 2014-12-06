@@ -41,6 +41,7 @@ static const char * internalQueueToken = "com.voodoo77.AudioStreamerInternal";
 	dispatch_queue_t internalQueue;
 }
 
+@property (nonatomic, assign, readwrite) NSInteger cacheBytesRead;
 @property (nonatomic, assign, readwrite) AudioStreamerErrorCode errorCode;
 @property (nonatomic, assign, readwrite) AudioStreamerState lastState;
 @property (nonatomic, assign, readwrite) AudioStreamerState state;
@@ -200,6 +201,8 @@ static void *queueContext = @"internalQueue";
 	
 	_mediaType = AudioStreamMediaTypeMusic;
 	_playbackRate = 1.0;
+	
+	_cacheBytesRead = 0;
 	
 	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInterruptionChangeToState:) name:AVAudioSessionInterruptionNotification object:nil];
 }
@@ -683,6 +686,9 @@ static void *queueContext = @"internalQueue";
 // This method contains bits of the "main" function from Apple's example in
 // AudioFileStreamExample.
 //
+
+static NSInteger lastCacheBytesProgress = 0;
+
 - (void)startInternal
 {
 	@autoreleasepool
@@ -744,7 +750,6 @@ static void *queueContext = @"internalQueue";
 			isRunning = [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
 												 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
 			
-			
 			if (seekWasRequested)
 			{
 				[self internalSeekToTime:requestedSeekTime];
@@ -756,7 +761,9 @@ static void *queueContext = @"internalQueue";
 			// handleBufferCompleteForQueue:buffer: should not change the state
 			// (may not enter the synchronized section).
 			//
-			if (buffersUsed == 0 && self.state == AudioStreamerStatePlaying)
+			if ((buffersUsed == 0 && self.state == AudioStreamerStatePlaying) ||
+				(self.state == AudioStreamerStatePlaying &&
+				 (self.cacheBytesProgress < self.cacheBytesRead + (kAQDefaultBufSize * kNumAQBufs))))
 			{
 				err = AudioQueuePause(audioQueue);
 				
@@ -769,6 +776,7 @@ static void *queueContext = @"internalQueue";
 				self.state = AudioStreamerStateBuffering;
 			}
 			
+			lastCacheBytesProgress = self.cacheBytesProgress;
 		} while (isRunning && ![self runLoopShouldExit]);
 		
 		[self cleanUp];
@@ -863,6 +871,8 @@ static void *queueContext = @"internalQueue";
 	packetBufferSize = 0;
 	seekByteOffset = 0;
 	seekTime = 0;
+	
+	self.cacheBytesRead = 0;
 	
 	self.fileExtension = nil;
 	self.state = AudioStreamerStateInitialized;
@@ -1311,6 +1321,8 @@ static void *queueContext = @"internalQueue";
 		return;
 	}
 	
+	self.cacheBytesRead += length;
+	
 	if (discontinuous)
 	{
 		err = AudioFileStreamParseBytes(audioFileStream, (unsigned int)length, bytes, kAudioFileStreamParseFlag_Discontinuity);
@@ -1440,7 +1452,13 @@ static void *queueContext = @"internalQueue";
 		// AudioFileStream stays a small amount ahead of the AudioQueue to
 		// avoid an audio glitch playing streaming files on iPhone SDKs < 3.0
 		//
-		if (self.state == AudioStreamerStateEOF || buffersUsed == kNumAQBufs - 1)
+		
+		NSInteger bufferProgressOffset = (self.cacheBytesProgress - lastCacheBytesProgress);
+		
+		if (self.state == AudioStreamerStateEOF ||
+			(buffersUsed == kNumAQBufs - 1) ||
+			((bufferProgressOffset < (((self.bitRate / 8) * 1024) * 10)) &&
+			 self.cacheBytesProgress < self.fileLength))
 		{
 			if (self.state == AudioStreamerStateBuffering)
 			{

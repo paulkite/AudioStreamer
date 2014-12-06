@@ -182,6 +182,8 @@ extern NSString * const ASStatusChangedNotification;
 @property (nonatomic, assign, readonly) AudioStreamerState state;
 @property (nonatomic, assign, readwrite) BOOL shouldStartPaused;
 @property (nonatomic, assign, readonly) AudioStreamerStopReason stopReason;
+@property (nonatomic, assign, readonly) NSInteger cacheBytesRead;
+@property (nonatomic, assign, readwrite) NSInteger cacheBytesProgress;
 @property (readonly) double progress;
 @property (readonly) double duration;
 @property (readwrite) UInt32 bitRate;
