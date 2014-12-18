@@ -27,6 +27,8 @@
 #import <CFNetwork/CFNetwork.h>
 #endif
 
+#import "V77SSLManager.h"
+
 #define BitRateEstimationMaxPackets 5000
 #define BitRateEstimationMinPackets 50
 
@@ -34,15 +36,22 @@ NSString * const ASStatusChangedNotification = @"ASStatusChangedNotification";
 NSString * const ASAudioSessionInterruptionOccuredNotification = @"ASAudioSessionInterruptionOccuredNotification";
 
 static const char * internalQueueToken = "com.voodoo77.AudioStreamerInternal";
+static const char * streamQueueToken = "com.voodoo77.AudioStreamerStream";
 
-@interface AudioStreamer () <NSStreamDelegate>
+@interface AudioStreamer ()
 {
 	dispatch_semaphore_t bufferSemaphore;
+	dispatch_semaphore_t restartSemaphore;
 	dispatch_queue_t internalQueue;
+	dispatch_queue_t streamQueue;
 }
 
+@property (nonatomic, assign, readwrite) CFHTTPAuthenticationRef authentication;
+@property (nonatomic, assign, readwrite) AudioStreamerBufferReason bufferReason;
 @property (nonatomic, assign, readwrite) NSInteger cacheBytesRead;
+@property (nonatomic, assign, readwrite) CFMutableDictionaryRef credentials;
 @property (nonatomic, assign, readwrite) AudioStreamerErrorCode errorCode;
+@property (nonatomic, assign, readwrite) NSUInteger lastCacheBytesProgress;
 @property (nonatomic, assign, readwrite) AudioStreamerState lastState;
 @property (nonatomic, assign, readwrite) AudioStreamerState state;
 @property (nonatomic, assign, readwrite) AudioStreamerStopReason stopReason;
@@ -58,6 +67,8 @@ static const char * internalQueueToken = "com.voodoo77.AudioStreamerInternal";
 	buffer:(AudioQueueBufferRef)inBuffer;
 - (void)handlePropertyChangeForQueue:(AudioQueueRef)inAQ
 	propertyID:(AudioQueuePropertyID)inID;
+- (void)handleReadFromStream:(CFReadStreamRef)aStream
+				   eventType:(CFStreamEventType)eventType;
 
 #if TARGET_OS_IPHONE
 - (void)handleInterruptionChangeToState:(NSNotification *)notification;
@@ -152,6 +163,13 @@ static void ASAudioQueueIsRunningCallback(void *inUserData, AudioQueueRef inAQ, 
 	[streamer handlePropertyChangeForQueue:inAQ propertyID:inID];
 }
 
+static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType eventType, void *inClientInfo)
+{
+	AudioStreamer *streamer = (__bridge AudioStreamer *)inClientInfo;
+	
+	[streamer handleReadFromStream:aStream eventType:eventType];
+}
+
 static void *queueContext = @"internalQueue";
 
 @implementation AudioStreamer
@@ -198,6 +216,8 @@ static void *queueContext = @"internalQueue";
 {
 	internalQueue = dispatch_queue_create(internalQueueToken, DISPATCH_QUEUE_SERIAL);
 	dispatch_queue_set_specific(internalQueue, queueContext, (void *)queueContext, nil);
+	
+	streamQueue = dispatch_queue_create(streamQueueToken, DISPATCH_QUEUE_SERIAL);
 	
 	_mediaType = AudioStreamMediaTypeMusic;
 	_playbackRate = 1.0;
@@ -305,6 +325,10 @@ static void *queueContext = @"internalQueue";
 			return NSLocalizedString(@"Audio playback failed.", @"");
 		case AudioStreamerErrorCodeAudioBufferTooSmall:
 			return NSLocalizedString(@"Audio packets are larger than kAQDefaultBufSize.", @"");
+		case AudioStreamerErrorCodeSocketConnectionFailed:
+			return NSLocalizedString(@"The connection to the Subsonic server failed.", @"");
+		case AudioStreamerErrorCodeSSLAuthorizationFailed:
+			return NSLocalizedString(@"SSL authorization failed for this connection.", @"");
 	}
 	
 	return nil;
@@ -428,6 +452,15 @@ static void *queueContext = @"internalQueue";
 		dispatch_async(dispatch_get_main_queue(), ^{
 			[self mainThreadStateNotification];
 		});
+	}
+}
+
+- (void)setBufferReason:(AudioStreamerBufferReason)bufferReason
+{
+	if (_bufferReason != bufferReason)
+	{
+		NSLog(@"Buffer Reason changed from %lu to %lu", _bufferReason, bufferReason);
+		_bufferReason = bufferReason;
 	}
 }
 
@@ -592,20 +625,26 @@ static void *queueContext = @"internalQueue";
 			discontinuous = YES;
 		}
 		
+		if (!self.authentication)
+		{
+			CFStringRef authString = (__bridge CFStringRef)([[[NSString stringWithFormat:@"%@:%@", self.username, self.password]
+															  dataUsingEncoding:NSUTF8StringEncoding]
+															 base64EncodedStringWithOptions:NSDataBase64Encoding64CharacterLineLength]);
+			CFStringRef authValue = (__bridge CFStringRef)([NSString stringWithFormat:@"Basic %@", authString]);
+			
+			CFHTTPMessageSetHeaderFieldValue(message, CFSTR("Authorization"), authValue);
+		}
+		
 		//
 		// Create the read stream that will receive data from the HTTP request
 		//
-		CFReadStreamRef readStream = CFReadStreamCreateForHTTPRequest(NULL, message);
+		stream = CFReadStreamCreateForHTTPRequest(NULL, message);
 		CFRelease(message);
-		
-		stream = (__bridge NSInputStream *)readStream;
-		CFRelease(readStream);
 		
 		//
 		// Enable stream redirection
 		//
-		if (CFReadStreamSetProperty(
-									(__bridge CFReadStreamRef)stream,
+		if (CFReadStreamSetProperty(stream,
 									kCFStreamPropertyHTTPShouldAutoredirect,
 									kCFBooleanTrue) == false)
 		{
@@ -617,20 +656,34 @@ static void *queueContext = @"internalQueue";
 		// Handle proxies
 		//
 		CFDictionaryRef proxySettings = CFNetworkCopySystemProxySettings();
-		CFReadStreamSetProperty((__bridge CFReadStreamRef)stream, kCFStreamPropertyHTTPProxy, proxySettings);
+		CFReadStreamSetProperty(stream, kCFStreamPropertyHTTPProxy, proxySettings);
 		CFRelease(proxySettings);
 		
 		//
 		// Handle SSL connections
 		//
-		if ([[self.url scheme] isEqualToString:@"https"])
+		if ([self.url.scheme isEqualToString:@"https"])
 		{
-			[stream setProperty:NSStreamSocketSecurityLevelNegotiatedSSL forKey:NSStreamSocketSecurityLevelKey];
+			if (CFReadStreamSetProperty(stream, kCFStreamSSLLevel, kCFStreamSocketSecurityLevelNegotiatedSSL))
+			{
+				NSDictionary *sslSettings = @{(id)kCFStreamSSLValidatesCertificateChain : (id)kCFBooleanFalse,
+											  (id)kCFStreamPropertyShouldCloseNativeSocket : (id)kCFBooleanTrue,
+											  (id)kCFStreamSSLPeerName : (id)kCFNull};
+				
+				if (!CFReadStreamSetProperty(stream, kCFStreamPropertySSLSettings, (__bridge CFTypeRef)(sslSettings)))
+				{
+					NSLog(@"SSL Property Settings Failed.");
+				}
+			}
+			else
+			{
+				NSLog(@"SSL Enable Failed.");
+			}
 		}
 	}
 	else
 	{
-		stream = [NSInputStream inputStreamWithURL:self.url];
+		stream = CFReadStreamCreateWithFile(kCFAllocatorDefault, (__bridge CFURLRef)self.url);
 		
 		if (!stream)
 		{
@@ -641,8 +694,8 @@ static void *queueContext = @"internalQueue";
 		{
 			NSLog(@"Setting seek offset property on stream. seekByteOffset: %li", (long)seekByteOffset);
 			
-			CFNumberRef seekOffset = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &seekByteOffset);
-			CFReadStreamSetProperty((__bridge CFReadStreamRef)stream, kCFStreamPropertyFileCurrentOffset, seekOffset);
+			CFNumberRef seekOffset = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &seekByteOffset);
+			CFReadStreamSetProperty(stream, kCFStreamPropertyFileCurrentOffset, seekOffset);
 			CFRelease(seekOffset);
 			
 			discontinuous = YES;
@@ -654,9 +707,14 @@ static void *queueContext = @"internalQueue";
 	//
 	self.state = AudioStreamerStateWaitingForData;
 	
-	[stream setDelegate:self];
-	[stream scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
-	[stream open];
+	CFStreamClientContext context = {0, (__bridge void *)(self), NULL, NULL, NULL};
+	
+	CFReadStreamSetClient(stream,
+						  kCFStreamEventHasBytesAvailable | kCFStreamEventErrorOccurred | kCFStreamEventEndEncountered,
+						  ASReadStreamCallback,
+						  &context);
+	CFReadStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+	CFReadStreamOpen(stream);
 	
 	return YES;
 }
@@ -686,8 +744,6 @@ static void *queueContext = @"internalQueue";
 // This method contains bits of the "main" function from Apple's example in
 // AudioFileStreamExample.
 //
-
-static NSInteger lastCacheBytesProgress = 0;
 
 - (void)startInternal
 {
@@ -761,9 +817,47 @@ static NSInteger lastCacheBytesProgress = 0;
 			// handleBufferCompleteForQueue:buffer: should not change the state
 			// (may not enter the synchronized section).
 			//
-			if ((buffersUsed == 0 && self.state == AudioStreamerStatePlaying) ||
-				(self.state == AudioStreamerStatePlaying &&
-				 (self.cacheBytesProgress < self.cacheBytesRead + (kAQDefaultBufSize * kNumAQBufs))))
+			
+			if (self.bufferReason == AudioStreamerBufferReasonNone)
+			{
+				if ((buffersUsed == 0 && self.state == AudioStreamerStatePlaying))
+				{
+					self.bufferReason = AudioStreamerBufferReasonInternal;
+				}
+				else if ((self.url.isFileURL &&
+						  self.state == AudioStreamerStatePlaying &&
+						  (self.cacheBytesProgress < (self.cacheBytesRead + (kAQDefaultBufSize * kNumAQBufs))) &&
+						  self.cacheBytesProgress < self.fileLength))
+				{
+					self.bufferReason = AudioStreamerBufferReasonExternal;
+				}
+			}
+			else if (self.state == AudioStreamerStateBuffering &&
+					 self.bufferReason == AudioStreamerBufferReasonExternal)
+			{
+				// I'm not fond of dealing with this case in this way, but... For now it'll do.
+				NSInteger bufferProgressOffset = (self.cacheBytesProgress - self.lastCacheBytesProgress);
+				NSInteger bufferExpected = ((((NSInteger)self.bitRate / 8) * 1024) * 10);
+				
+				if (bufferProgressOffset > bufferExpected ||
+					self.cacheBytesProgress > self.fileLength)
+				{
+					self.bufferReason = AudioStreamerBufferReasonNone;
+					
+					err = AudioQueueStart(audioQueue, NULL);
+					
+					if (err)
+					{
+						[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+						return;
+					}
+					
+					self.state = AudioStreamerStatePlaying;
+				}
+			}
+			
+			if (self.state == AudioStreamerStatePlaying &&
+				self.bufferReason != AudioStreamerBufferReasonNone)
 			{
 				err = AudioQueuePause(audioQueue);
 				
@@ -774,9 +868,8 @@ static NSInteger lastCacheBytesProgress = 0;
 				}
 				
 				self.state = AudioStreamerStateBuffering;
+				self.lastCacheBytesProgress = self.cacheBytesProgress;
 			}
-			
-			lastCacheBytesProgress = self.cacheBytesProgress;
 		} while (isRunning && ![self runLoopShouldExit]);
 		
 		[self cleanUp];
@@ -790,8 +883,9 @@ static NSInteger lastCacheBytesProgress = 0;
 	//
 	if (stream)
 	{
-		[stream setDelegate:nil];
-		[stream close];
+		CFReadStreamClose(stream);
+		CFReadStreamUnscheduleFromRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
+		CFRelease(stream);
 		stream = nil;
 	}
 	
@@ -852,6 +946,18 @@ static NSInteger lastCacheBytesProgress = 0;
 	
 	bufferSemaphore = nil;
 	
+	if (self.credentials)
+	{
+		CFRelease(self.credentials);
+		self.credentials = nil;
+	}
+	
+	if (self.authentication)
+	{
+		CFRelease(self.authentication);
+		self.authentication = nil;
+	}
+	
 #if TARGET_OS_IPHONE
 	NSError *error = nil;
 	
@@ -873,9 +979,21 @@ static NSInteger lastCacheBytesProgress = 0;
 	seekTime = 0;
 	
 	self.cacheBytesRead = 0;
+	self.lastCacheBytesProgress = 0;
+	self.bufferReason = AudioStreamerBufferReasonNone;
 	
 	self.fileExtension = nil;
-	self.state = AudioStreamerStateInitialized;
+	
+	if (self.state != AudioStreamerStateRestarting)
+	{
+		self.url = nil;
+		self.state = AudioStreamerStateInitialized;
+	}
+	
+	if (restartSemaphore)
+	{
+		dispatch_semaphore_signal(restartSemaphore);
+	}
 }
 
 //
@@ -885,7 +1003,7 @@ static NSInteger lastCacheBytesProgress = 0;
 //
 - (void)start
 {
-	if ([self isPaused])
+	if ([self isPaused] || [self isBuffering])
 	{
 		[self pause];
 	}
@@ -963,8 +1081,9 @@ static NSInteger lastCacheBytesProgress = 0;
 	//
 	if (stream)
 	{
-		[stream setDelegate: nil];
-		[stream close];
+		CFReadStreamClose(stream);
+		CFReadStreamUnscheduleFromRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
+		CFRelease(stream);
 		stream = nil;
 	}
 	
@@ -1162,8 +1281,10 @@ static NSInteger lastCacheBytesProgress = 0;
 		
 		self.state = AudioStreamerStatePaused;
 	}
-	else if (self.state == AudioStreamerStatePaused)
+	else if (self.state == AudioStreamerStatePaused || self.state == AudioStreamerStateBuffering)
 	{
+		self.bufferReason = AudioStreamerBufferReasonNone;
+		
 		err = AudioQueueStart(audioQueue, NULL);
 		
 		if (err)
@@ -1226,9 +1347,9 @@ static NSInteger lastCacheBytesProgress = 0;
 	}
 }
 
-- (void)stream:(NSStream *)aStream handleEvent:(NSStreamEvent)eventCode
+- (void)handleReadFromStream:(CFReadStreamRef)aStream eventType:(CFStreamEventType)eventType
 {
-	if (![aStream isEqual:stream])
+	if (aStream != stream)
 	{
 		//
 		// Ignore messages from old streams
@@ -1236,35 +1357,117 @@ static NSInteger lastCacheBytesProgress = 0;
 		return;
 	}
 	
-	switch (eventCode)
+	__weak AudioStreamer *weakSelf = self;
+	
+	switch (eventType)
 	{
-		case NSStreamEventHasBytesAvailable:
-			[self streamHasBytesAvailable:aStream];
+		case kCFStreamEventHasBytesAvailable:
+		{
+			dispatch_async(streamQueue, ^{
+				[weakSelf streamHasBytesAvailable:aStream];
+			});
 			break;
-		case NSStreamEventEndEncountered:
-			[self endEncounteredOnStream:aStream];
+		}
+		case kCFStreamEventEndEncountered:
+		{
+			dispatch_async(streamQueue, ^{
+				[weakSelf endEncounteredOnStream:aStream];
+			});
 			break;
-		case NSStreamEventErrorOccurred:
-			[self failWithErrorCode:AudioStreamerErrorCodeAudioDataNotFound];
+		}
+		case kCFStreamEventErrorOccurred:
+		{
+			dispatch_async(streamQueue, ^{
+				[weakSelf errorOccurredOnStream:aStream];
+			});
 			break;
+		}
 		default:
 			break;
 	}
 }
 
-- (void)streamHasBytesAvailable:(NSStream *)aStream
+- (void)streamHasBytesAvailable:(CFReadStreamRef)aStream
 {
 	if (!httpHeaders && !self.url.isFileURL)
 	{
-		CFTypeRef message = CFReadStreamCopyProperty((__bridge CFReadStreamRef)stream, kCFStreamPropertyHTTPResponseHeader);
+		CFTypeRef message = CFReadStreamCopyProperty(aStream, kCFStreamPropertyHTTPResponseHeader);
 		httpHeaders = (__bridge NSDictionary *)CFHTTPMessageCopyAllHeaderFields((CFHTTPMessageRef)message);
 		CFRelease(message);
+		
+		NSURL *finalUrl = CFBridgingRelease(CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPFinalURL));
+		
+		if ([finalUrl.scheme isEqualToString:@"https"])
+		{
+			if (![finalUrl.scheme isEqualToString:self.url.scheme] ||
+				![finalUrl.host isEqualToString:self.url.host])
+			{
+				// We redirected and must close out the stream and start over.
+				// If we don't start the stream on an SSL connection and then try
+				// to validate we get SSL handshake errors down the line.
+				// So set our URL to the redirected one and try again.
+				
+				self.state = AudioStreamerStateRestarting;
+				
+				restartSemaphore = dispatch_semaphore_create(0);
+				
+				CFReadStreamClose(stream);
+				CFReadStreamUnscheduleFromRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
+				CFRelease(stream);
+				stream = nil;
+				
+				self.url = finalUrl;
+				
+				dispatch_semaphore_wait(restartSemaphore, DISPATCH_TIME_FOREVER);
+				restartSemaphore = nil;
+				
+				__weak AudioStreamer *weakSelf = self;
+				
+				dispatch_async(dispatch_get_main_queue(), ^{
+					notificationCenter = [NSNotificationCenter defaultCenter];
+					weakSelf.errorCode = AudioStreamerErrorCodeNone;
+					weakSelf.state = AudioStreamerStateStartingFileThread;
+					
+					dispatch_async(internalQueue, ^{
+						AudioStreamer *strongSelf = weakSelf;
+						
+						if (strongSelf)
+						{
+							[strongSelf startInternal];
+						}
+					});
+				});
+				return;
+			}
+			
+			SecTrustRef trust = (SecTrustRef)CFReadStreamCopyProperty(stream, kCFStreamPropertySSLPeerTrust);
+			
+			if (trust)
+			{
+				BOOL success = [[V77SSLManager defaultManager] validateServerTrust:trust forHost:finalUrl.host];
+				
+				CFRelease(trust);
+				
+				if (!success)
+				{
+					// Trust validation failed. Kill everything.
+					[self failWithErrorCode:AudioStreamerErrorCodeSSLAuthorizationFailed];
+					return;
+				}
+			}
+			else
+			{
+				// Unable to evaluate trust. Kill everything.
+				[self failWithErrorCode:AudioStreamerErrorCodeSSLAuthorizationFailed];
+				return;
+			}
+		}
 		
 		//
 		// Only read the content length if we seeked to time zero, otherwise
 		// we only have a subset of the total bytes.
 		//
-		if (seekByteOffset == 0)
+		if (seekByteOffset == 0 && [httpHeaders objectForKey:@"Content-Length"])
 		{
 			self.fileLength = [[httpHeaders objectForKey:@"Content-Length"] integerValue];
 		}
@@ -1300,7 +1503,7 @@ static NSInteger lastCacheBytesProgress = 0;
 	UInt8 bytes[kAQDefaultBufSize];
 	CFIndex length;
 	
-	if ([self isFinishing] || ![stream hasBytesAvailable])
+	if ([self isFinishing] || !CFReadStreamHasBytesAvailable(stream))
 	{
 		return;
 	}
@@ -1308,7 +1511,7 @@ static NSInteger lastCacheBytesProgress = 0;
 	//
 	// Read the bytes from the stream
 	//
-	length = [stream read:bytes maxLength:kAQDefaultBufSize];
+	length = CFReadStreamRead(aStream, bytes, kAQDefaultBufSize);
 	
 	if (length == -1)
 	{
@@ -1345,7 +1548,7 @@ static NSInteger lastCacheBytesProgress = 0;
 	}
 }
 
-- (void)endEncounteredOnStream:(NSStream *)aStream
+- (void)endEncounteredOnStream:(CFReadStreamRef)aStream
 {
 	if ([self isFinishing])
 	{
@@ -1402,6 +1605,22 @@ static NSInteger lastCacheBytesProgress = 0;
 	}
 }
 
+- (void)errorOccurredOnStream:(CFReadStreamRef)aStream
+{
+	CFErrorRef error = CFReadStreamCopyError(aStream);
+	CFIndex eventErrorCode = CFErrorGetCode(error);
+	CFRelease(error);
+	
+	if (eventErrorCode == ENOTCONN)
+	{
+		[self failWithErrorCode:AudioStreamerErrorCodeSocketConnectionFailed];
+		return;
+	}
+	
+	// Unknown error.
+	[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+}
+
 //
 // enqueueBuffer
 //
@@ -1453,15 +1672,13 @@ static NSInteger lastCacheBytesProgress = 0;
 		// avoid an audio glitch playing streaming files on iPhone SDKs < 3.0
 		//
 		
-		NSInteger bufferProgressOffset = (self.cacheBytesProgress - lastCacheBytesProgress);
-		
 		if (self.state == AudioStreamerStateEOF ||
-			(buffersUsed == kNumAQBufs - 1) ||
-			((bufferProgressOffset < (((self.bitRate / 8) * 1024) * 10)) &&
-			 self.cacheBytesProgress < self.fileLength))
+			(self.bufferReason != AudioStreamerBufferReasonExternal && (buffersUsed == kNumAQBufs - 1)))
 		{
 			if (self.state == AudioStreamerStateBuffering)
 			{
+				self.bufferReason = AudioStreamerBufferReasonNone;
+				
 				if (self.shouldStartPaused)
 				{
 					self.state = AudioStreamerStatePaused;
@@ -1610,11 +1827,12 @@ static NSInteger lastCacheBytesProgress = 0;
 	
 	if (ignorableError)
 	{
+		free(cookieData);
 		return;
 	}
 
 	// set the cookie on the queue.
-	ignorableError = AudioQueueSetProperty(audioQueue, kAudioQueueProperty_MagicCookie, cookieData, cookieSize);
+	AudioQueueSetProperty(audioQueue, kAudioQueueProperty_MagicCookie, cookieData, cookieSize);
 	free(cookieData);
 }
 
