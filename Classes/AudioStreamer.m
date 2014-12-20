@@ -591,6 +591,32 @@ static void *queueContext = @"internalQueue";
 	return fileTypeHint;
 }
 
++ (AudioFileTypeID)hintForMIMEType:(NSString *)mimeType
+{
+	AudioFileTypeID fileTypeHint = kAudioFileMP3Type;
+	
+	if ([mimeType isEqualToString:@"audio/vnd.wave"] ||
+		[mimeType isEqualToString:@"audio/wav"])
+	{
+		fileTypeHint = kAudioFileWAVEType;
+	}
+	else if ([mimeType isEqualToString:@"audio/aiff"] ||
+			 [mimeType isEqualToString:@"audio/x-aiff"])
+	{
+		fileTypeHint = kAudioFileAIFFType;
+	}
+	else if ([mimeType isEqualToString:@"audio/mp4"])
+	{
+		fileTypeHint = kAudioFileMPEG4Type;
+	}
+	else if ([mimeType isEqualToString:@"audio/aac"])
+	{
+		fileTypeHint = kAudioFileAAC_ADTSType;
+	}
+	
+	return fileTypeHint;
+}
+
 //
 // openReadStream
 //
@@ -794,6 +820,7 @@ static void *queueContext = @"internalQueue";
 		if (![self openReadStream])
 		{
 			[self cleanUp];
+			return;
 		}
 		
 		//
@@ -870,6 +897,7 @@ static void *queueContext = @"internalQueue";
 				self.state = AudioStreamerStateBuffering;
 				self.lastCacheBytesProgress = self.cacheBytesProgress;
 			}
+			
 		} while (isRunning && ![self runLoopShouldExit]);
 		
 		[self cleanUp];
@@ -1189,8 +1217,7 @@ static void *queueContext = @"internalQueue";
 {
 	if (packetDuration && processedPacketsCount > BitRateEstimationMinPackets)
 	{
-		double averagePacketByteSize = processedPacketsSizeTotal / processedPacketsCount;
-		return 8.0 * averagePacketByteSize / packetDuration;
+		return processedPacketsSizeTotal / processedPacketsCount;
 	}
 	
 	if (bitRate)
@@ -1357,29 +1384,21 @@ static void *queueContext = @"internalQueue";
 		return;
 	}
 	
-	__weak AudioStreamer *weakSelf = self;
-	
 	switch (eventType)
 	{
 		case kCFStreamEventHasBytesAvailable:
 		{
-			dispatch_async(streamQueue, ^{
-				[weakSelf streamHasBytesAvailable:aStream];
-			});
+			[self streamHasBytesAvailable:aStream];
 			break;
 		}
 		case kCFStreamEventEndEncountered:
 		{
-			dispatch_async(streamQueue, ^{
-				[weakSelf endEncounteredOnStream:aStream];
-			});
+			[self endEncounteredOnStream:aStream];
 			break;
 		}
 		case kCFStreamEventErrorOccurred:
 		{
-			dispatch_async(streamQueue, ^{
-				[weakSelf errorOccurredOnStream:aStream];
-			});
+			[self errorOccurredOnStream:aStream];
 			break;
 		}
 		default:
@@ -1720,7 +1739,7 @@ static void *queueContext = @"internalQueue";
 	// wait until next buffer is not in use
 	while (inuse[fillBufferIndex])
 	{
-		dispatch_semaphore_wait(bufferSemaphore, DISPATCH_TIME_FOREVER);
+		dispatch_semaphore_wait(bufferSemaphore, DISPATCH_TIME_NOW);
 	}
 }
 
@@ -1953,11 +1972,11 @@ static void *queueContext = @"internalQueue";
 	}
 	else
 	{
-//			NSLog(@"Property is %c%c%c%c",
-//				((char *)&inPropertyID)[3],
-//				((char *)&inPropertyID)[2],
-//				((char *)&inPropertyID)[1],
-//				((char *)&inPropertyID)[0]);
+			NSLog(@"Property is %c%c%c%c",
+				((char *)&inPropertyID)[3],
+				((char *)&inPropertyID)[2],
+				((char *)&inPropertyID)[1],
+				((char *)&inPropertyID)[0]);
 	}
 }
 
@@ -2016,7 +2035,7 @@ static void *queueContext = @"internalQueue";
 			
 			if (processedPacketsCount < BitRateEstimationMaxPackets)
 			{
-				processedPacketsSizeTotal += packetSize;
+				processedPacketsSizeTotal += 8.0 * packetSize / packetDuration;
 				processedPacketsCount += 1;
 			}
 			
