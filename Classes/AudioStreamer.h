@@ -80,21 +80,6 @@ typedef NS_ENUM(NSUInteger, AudioStreamerStopReason)
 	AudioStreamerStopReasonTemporary
 };
 
-/*!
- @typedef AudioStreamBufferReason
- @abstract Denotes the source of the cause for the buffer state.
- @constant AudioStreamerBufferReasonNone No buffer reason.
- @constant AudioStreamerBufferReasonInternal Buffering due to the audio queue.
- @constant AudioStreamerBufferReasonExternal Buffering due to the disk cache.
-*/
-
-typedef NS_ENUM(NSUInteger, AudioStreamerBufferReason)
-{
-	AudioStreamerBufferReasonNone = 0,
-	AudioStreamerBufferReasonInternal,
-	AudioStreamerBufferReasonExternal
-};
-
 typedef NS_ENUM(NSUInteger, AudioStreamerErrorCode)
 {
 	AudioStreamerErrorCodeNone = 0,
@@ -140,6 +125,8 @@ typedef NS_ENUM(NSUInteger, AudioStreamPlaybackRate)
 
 extern NSString * const ASStatusChangedNotification;
 
+@protocol AudioStreamerDelegate;
+
 @interface AudioStreamer : NSObject
 {
 	//
@@ -159,15 +146,10 @@ extern NSString * const ASStatusChangedNotification;
 	size_t packetsFilled;			// how many packets have been filled
 	bool inuse[kNumAQBufs];			// flags to indicate that a buffer is still in use
 	NSInteger buffersUsed;
-	NSDictionary *httpHeaders;
-	NSString *fileExtension;
 	
 	OSStatus err;
 	
 	bool discontinuous;			// flag to indicate middle of the stream
-
-	CFReadStreamRef stream;
-	NSNotificationCenter *notificationCenter;
 	
 	UInt32 bitRate;				// Bits per second in the file
 	NSInteger dataOffset;		// Offset of the first audio packet in the stream
@@ -192,6 +174,7 @@ extern NSString * const ASStatusChangedNotification;
 #endif
 }
 
+@property (nonatomic, weak, readwrite) id<AudioStreamerDelegate> delegate;
 @property (nonatomic, assign, readonly) AudioStreamerErrorCode errorCode;
 @property (nonatomic, assign, readwrite) NSInteger fileLength; // Length of the file in bytes
 @property (nonatomic, assign, readonly) AudioStreamerState lastState;
@@ -200,22 +183,16 @@ extern NSString * const ASStatusChangedNotification;
 @property (nonatomic, assign, readonly) AudioStreamerState state;
 @property (nonatomic, assign, readwrite) BOOL shouldStartPaused;
 @property (nonatomic, assign, readonly) AudioStreamerStopReason stopReason;
-@property (nonatomic, assign, readonly) AudioStreamerBufferReason bufferReason;
 @property (nonatomic, assign, readonly) NSInteger cacheBytesRead;
 @property (nonatomic, assign, readwrite) NSInteger cacheBytesProgress;
-@property (nonatomic, strong, readwrite) NSString *password;
 @property (readonly) double progress;
 @property (readonly) double duration;
 @property (readwrite) UInt32 bitRate;
-@property (readonly) NSDictionary *httpHeaders;
-@property (copy,readwrite) NSString *fileExtension;
-@property (nonatomic) BOOL shouldDisplayAlertOnError; // to control whether the alert is displayed in failWithErrorCode
-@property (nonatomic, strong, readwrite) NSURL *url;
-@property (nonatomic, strong, readwrite) NSString *username;
 
 + (AudioFileTypeID)hintForFileExtension:(NSString *)fileExtension;
++ (AudioFileTypeID)hintForMIMEType:(NSString *)mimeType;
 
-- (instancetype)initWithURL:(NSURL *)aURL;
+- (NSURL *)url;
 - (void)start;
 - (void)stop;
 - (void)pause;
@@ -224,13 +201,19 @@ extern NSString * const ASStatusChangedNotification;
 - (BOOL)isBuffering;
 - (BOOL)isWaiting;
 - (BOOL)isIdle;
-- (BOOL)isAborted; // return YES if streaming halted due to error (AS_STOPPING + AS_STOPPING_ERROR)
+- (BOOL)isAborted; // return YES if streaming halted due to error (AudioStreamerStateStopping + AudioStreamerStopReasonError)
 - (BOOL)isStopped;
 - (void)seekToTime:(double)newSeekTime;
 - (double)calculatedBitRate;
 
 @end
 
+@protocol AudioStreamerDelegate <NSObject>
+
+- (NSURLRequest *)URLRequestForCurrentPlayableItem;
+- (NSURLSessionConfiguration *)sessionConfigurationForAudioStreamer:(AudioStreamer *)streamer;
+
+@end
 
 
 
