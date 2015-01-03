@@ -67,8 +67,7 @@ typedef NS_ENUM(NSUInteger, AudioStreamerState)
 	AudioStreamerStateBuffering,
 	AudioStreamerStateStopping,
 	AudioStreamerStateStopped,
-	AudioStreamerStatePaused,
-	AudioStreamerStateRestarting
+	AudioStreamerStatePaused
 };
 
 typedef NS_ENUM(NSUInteger, AudioStreamerStopReason)
@@ -121,6 +120,13 @@ typedef NS_ENUM(NSUInteger, AudioStreamPlaybackRate)
 	AudioStreamPlaybackRateNormal,
 	AudioStreamPlaybackRateDouble,
 	AudioStreamPlaybackRateTriple
+};
+
+typedef NS_ENUM(NSUInteger, AudioStreamerResourceType)
+{
+	AudioStreamerResourceTypeNotSet = 0,
+	AudioStreamerResourceTypeNetwork,
+	AudioStreamerResourceTypeFileOnDisk
 };
 
 extern NSString * const ASStatusChangedNotification;
@@ -210,7 +216,7 @@ extern NSString * const ASStatusChangedNotification;
 
 @protocol AudioStreamerDelegate <NSObject>
 
-- (NSURLRequest *)URLRequestForCurrentPlayableItem;
+- (NSURLRequest *)URLRequestForCurrentPlayableItemWithResourceType:(AudioStreamerResourceType)resourceType;
 - (NSURLSessionConfiguration *)sessionConfigurationForAudioStreamer:(AudioStreamer *)streamer;
 
 @end

@@ -40,15 +40,12 @@ static const char * internalQueueToken = "com.voodoo77.AudioStreamerInternal";
 @interface AudioStreamer () <V77AudioInputStreamDelegate>
 {
 	dispatch_semaphore_t bufferSemaphore;
-	dispatch_semaphore_t restartSemaphore;
 	dispatch_queue_t internalQueue;
 }
 
 @property (nonatomic, assign, readwrite) NSInteger cacheBytesRead;
 @property (nonatomic, assign, readwrite) AudioStreamerErrorCode errorCode;
 @property (nonatomic, strong, readwrite) V77AudioInputStream *inputStream;
-@property (nonatomic, strong, readwrite) NSOperationQueue *sessionQueue;
-@property (nonatomic, strong, readwrite) NSOperationQueue *streamQueue;
 @property (nonatomic, assign, readwrite) NSUInteger lastCacheBytesProgress;
 @property (nonatomic, assign, readwrite) AudioStreamerState lastState;
 @property (nonatomic, assign, readwrite) AudioStreamerState state;
@@ -186,9 +183,6 @@ static void *queueContext = @"internalQueue";
 {
 	internalQueue = dispatch_queue_create(internalQueueToken, DISPATCH_QUEUE_SERIAL);
 	dispatch_queue_set_specific(internalQueue, queueContext, (void *)queueContext, nil);
-	
-	self.sessionQueue = [NSOperationQueue new];
-	self.streamQueue = [NSOperationQueue new];
 	
 	_mediaType = AudioStreamMediaTypeMusic;
 	_playbackRate = 1.0;
@@ -346,6 +340,12 @@ static void *queueContext = @"internalQueue";
 		self.state = AudioStreamerStateStopping;
 		self.stopReason = AudioStreamerStopReasonError;
 		AudioQueueStop(audioQueue, true);
+		
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf cleanUp];
+		});
 	}
 }
 
@@ -365,12 +365,6 @@ static void *queueContext = @"internalQueue";
 	{
 		self.lastState = self.state;
 		_state = aStatus;
-		
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(dispatch_get_main_queue(), ^{
-			[[NSNotificationCenter defaultCenter] postNotificationName:ASStatusChangedNotification object:weakSelf];
-		});
 	}
 }
 
@@ -538,7 +532,7 @@ static void *queueContext = @"internalQueue";
 	}
 	
 	NSURLSessionConfiguration *configuration = [self.delegate sessionConfigurationForAudioStreamer:self];
-	NSMutableURLRequest *request = [[self.delegate URLRequestForCurrentPlayableItem] mutableCopy];
+	NSMutableURLRequest *request = [[self.delegate URLRequestForCurrentPlayableItemWithResourceType:AudioStreamerResourceTypeNotSet] mutableCopy];
 	
 	[headers enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
 		[request setValue:value forHTTPHeaderField:key];
@@ -546,15 +540,15 @@ static void *queueContext = @"internalQueue";
 	
 	if (request)
 	{
-		self.inputStream = [V77AudioInputStream audioInputStreamWithURLRequest:request
-																 configuration:configuration
-																  sessionQueue:self.sessionQueue
-																 delegateQueue:self.streamQueue];
-		self.inputStream.delegate = self;
+		V77AudioInputStream *inputStream = [V77AudioInputStream audioInputStreamWithURLRequest:request
+																				 configuration:configuration];
+		inputStream.delegate = self;
 		
 		self.state = AudioStreamerStateWaitingForData;
 		
-		[self.inputStream resume];
+		[inputStream resume];
+		
+		self.inputStream = inputStream;
 		
 		return YES;
 	}
@@ -637,55 +631,13 @@ static void *queueContext = @"internalQueue";
 		if (![self openInputStream])
 		{
 			[self cleanUp];
-			return;
 		}
-		
-		//
-		// Process the run loop until playback is finished or failed.
-		//
-		BOOL isRunning = YES;
-		
-		do
-		{
-			//isRunning = [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-												 //beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
-			
-			[NSThread sleepForTimeInterval:0.25];
-			
-			if (seekWasRequested)
-			{
-				[self internalSeekToTime:requestedSeekTime];
-				seekWasRequested = NO;
-			}
-			
-			//
-			// If there are no queued buffers, we need to check here since the
-			// handleBufferCompleteForQueue:buffer: should not change the state
-			// (may not enter the synchronized section).
-			//
-			
-			if (buffersUsed == 0 && self.state == AudioStreamerStatePlaying)
-			{
-				err = AudioQueuePause(audioQueue);
-				
-				if (err)
-				{
-					[self failWithErrorCode:AudioStreamerErrorCodeAudioQueuePauseFailed];
-					return;
-				}
-				
-				self.state = AudioStreamerStateBuffering;
-				self.lastCacheBytesProgress = self.cacheBytesProgress;
-			}
-			
-		} while (isRunning && ![self runLoopShouldExit]);
-		
-		[self cleanUp];
 	}
 }
 
 - (void)cleanUp
 {
+	self.inputStream.delegate = nil;
 	[self.inputStream invalidateAndCancel];
 	self.inputStream = nil;
 	
@@ -767,15 +719,7 @@ static void *queueContext = @"internalQueue";
 	self.cacheBytesRead = 0;
 	self.lastCacheBytesProgress = 0;
 	
-	if (self.state != AudioStreamerStateRestarting)
-	{
-		self.state = AudioStreamerStateInitialized;
-	}
-	
-	if (restartSemaphore)
-	{
-		dispatch_semaphore_signal(restartSemaphore);
-	}
+	self.state = AudioStreamerStateInitialized;
 }
 
 //
@@ -811,7 +755,9 @@ static void *queueContext = @"internalQueue";
 //
 - (void)internalSeekToTime:(double)newSeekTime
 {
-	if ([self calculatedBitRate] == 0.0 || self.fileLength <= 0)
+	double calculatedBitRate = [self calculatedBitRate];
+	
+	if (calculatedBitRate == 0.0 || self.fileLength <= 0)
 	{
 		return;
 	}
@@ -840,8 +786,6 @@ static void *queueContext = @"internalQueue";
 	//
 	// Attempt to align the seek with a packet boundary
 	//
-	double calculatedBitRate = [self calculatedBitRate];
-	
 	if (packetDuration > 0 &&
 		calculatedBitRate > 0)
 	{
@@ -860,6 +804,7 @@ static void *queueContext = @"internalQueue";
 	//
 	// Close the current input stream
 	//
+	self.inputStream.delegate = nil;
 	[self.inputStream invalidateAndCancel];
 	self.inputStream = nil;
 	
@@ -904,6 +849,16 @@ static void *queueContext = @"internalQueue";
 {
 	requestedSeekTime = newSeekTime;
 	seekWasRequested = YES;
+	
+	if (self.state != AudioStreamerStateInitialized)
+	{
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf internalSeekToTime:requestedSeekTime];
+			seekWasRequested = NO;
+		});
+	}
 }
 
 //
@@ -1093,9 +1048,8 @@ static void *queueContext = @"internalQueue";
 		 self.state == AudioStreamerStateBuffering ||
 		 self.state == AudioStreamerStateWaitingForQueue))
 	{
-		[self.inputStream invalidateAndCancel];
-		
 		err = AudioQueueFlush(audioQueue);
+		
 		if (err)
 		{
 			[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueFlushFailed];
@@ -1117,6 +1071,10 @@ static void *queueContext = @"internalQueue";
 	{
 		self.state = AudioStreamerStateStopped;
 		self.stopReason = AudioStreamerStopReasonUserAction;
+		
+		dispatch_sync(internalQueue, ^{
+			[self cleanUp];
+		});
 	}
 	
 	seekWasRequested = NO;
@@ -1130,6 +1088,18 @@ static void *queueContext = @"internalQueue";
 - (NSInteger)knownContentLengthForStream:(V77AudioInputStream *)stream
 {
 	return self.fileLength;
+}
+
+- (BOOL)streamShouldWaitForDataFromDisk:(V77AudioInputStream *)stream currentRequest:(NSURLRequest **)currentRequest
+{
+	NSURLRequest *request = [self.delegate URLRequestForCurrentPlayableItemWithResourceType:AudioStreamerResourceTypeNetwork];
+	
+	if (request)
+	{
+		*currentRequest = [request copy];
+	}
+	
+	return NO;
 }
 
 - (void)streamHasBytesAvailable:(V77AudioInputStream *)aStream
@@ -1173,7 +1143,7 @@ static void *queueContext = @"internalQueue";
 	UInt8 bytes[kAQDefaultBufSize];
 	CFIndex length;
 	
-	if ([self isFinishing] || !self.inputStream.hasBytesAvailable)
+	if ([self isFinishing] || ![aStream hasBytesAvailable])
 	{
 		return;
 	}
@@ -1826,6 +1796,25 @@ static void *queueContext = @"internalQueue";
 #endif
 	
 	dispatch_semaphore_signal(bufferSemaphore);
+	
+	if (![self isFinishing])
+	{
+		if ((self.state == AudioStreamerStatePlaying) && (buffersUsed == 0))
+		{
+			dispatch_sync(internalQueue, ^{
+				err = AudioQueuePause(audioQueue);
+				
+				if (err)
+				{
+					[self failWithErrorCode:AudioStreamerErrorCodeAudioQueuePauseFailed];
+					return;
+				}
+				
+				self.state = AudioStreamerStateBuffering;
+				self.lastCacheBytesProgress = self.cacheBytesProgress;
+			});
+		}
+	}
 }
 
 - (void)handlePropertyChange:(NSNumber *)num
@@ -1869,18 +1858,54 @@ static void *queueContext = @"internalQueue";
 				if (isRunning == 0)
 				{
 					self.state = AudioStreamerStateStopped;
+					
+					if (self.stopReason != AudioStreamerStopReasonTemporary)
+					{
+						__weak AudioStreamer *weakSelf = self;
+						
+						dispatch_async(internalQueue, ^{
+							[weakSelf cleanUp];
+						});
+					}
 				}
 			}
 			else if (self.state == AudioStreamerStateWaitingForQueue)
 			{
+				//
+				// Note about this bug avoidance quirk:
+				//
+				// On cleanup of the AudioQueue thread, on rare occasions, there would
+				// be a crash in CFSetContainsValue as a CFRunLoopObserver was getting
+				// removed from the CFRunLoop.
+				//
+				// After lots of testing, it appeared that the audio thread was
+				// attempting to remove CFRunLoop observers from the CFRunLoop after the
+				// thread had already deallocated the run loop.
+				//
+				// By creating an NSRunLoop for the AudioQueue thread, it changes the
+				// thread destruction order and seems to avoid this crash bug -- or
+				// at least I haven't had it since (nasty hard to reproduce error!)
+				//
+				[NSRunLoop currentRunLoop];
+				
 				self.state = AudioStreamerStatePlaying;
+				
+				__weak AudioStreamer *weakSelf = self;
 				
 				if (self.shouldStartPaused)
 				{
-					[self pause];
-					self.shouldStartPaused = NO;
-					
-					return;
+					dispatch_async(dispatch_get_main_queue(), ^{
+						[weakSelf pause];
+						weakSelf.shouldStartPaused = NO;
+					});
+				}
+				
+				if (seekWasRequested)
+				{
+					dispatch_async(internalQueue, ^{
+						[weakSelf internalSeekToTime:requestedSeekTime];
+						seekWasRequested = NO;
+					});
 				}
 			}
 			else
