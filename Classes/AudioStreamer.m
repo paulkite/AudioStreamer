@@ -215,9 +215,12 @@ static void *queueContext = @"internalQueue";
 //
 - (BOOL)isFinishing
 {
-	return ((self.errorCode != AudioStreamerErrorCodeNone && self.state != AudioStreamerStateInitialized) ||
-			((self.state == AudioStreamerStateStopping || self.state == AudioStreamerStateStopped) &&
-			 self.stopReason != AudioStreamerStopReasonTemporary));
+	@synchronized(self)
+	{
+		return ((self.errorCode != AudioStreamerErrorCodeNone && self.state != AudioStreamerStateInitialized) ||
+				((self.state == AudioStreamerStateStopping || self.state == AudioStreamerStateStopped) &&
+				 self.stopReason != AudioStreamerStopReasonTemporary));
+	}
 }
 
 //
@@ -344,7 +347,7 @@ static void *queueContext = @"internalQueue";
 		__weak AudioStreamer *weakSelf = self;
 		
 		dispatch_async(internalQueue, ^{
-			[weakSelf cleanUp];
+			[weakSelf closeInputStream];
 		});
 	}
 }
@@ -361,10 +364,13 @@ static void *queueContext = @"internalQueue";
 //
 - (void)setState:(AudioStreamerState)aStatus
 {
-	if (self.state != aStatus)
+	@synchronized(self)
 	{
-		self.lastState = self.state;
-		_state = aStatus;
+		if (self.state != aStatus)
+		{
+			self.lastState = self.state;
+			_state = aStatus;
+		}
 	}
 }
 
@@ -531,7 +537,7 @@ static void *queueContext = @"internalQueue";
 		discontinuous = YES;
 	}
 	
-	NSURLSessionConfiguration *configuration = [self.delegate sessionConfigurationForAudioStreamer:self];
+	NSURLSessionConfiguration *configuration = [[self.delegate sessionConfigurationForAudioStreamer:self] copy];
 	NSMutableURLRequest *request = [[self.delegate URLRequestForCurrentPlayableItemWithResourceType:AudioStreamerResourceTypeNotSet] mutableCopy];
 	
 	[headers enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
@@ -554,6 +560,36 @@ static void *queueContext = @"internalQueue";
 	}
 	
 	return NO;
+}
+
+- (void)closeInputStream
+{
+	if (self.inputStream.inputState != V77AudioInputStreamInputStateOpen)
+	{
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf cleanUp];
+		});
+	}
+	
+	[self.inputStream invalidateAndCancel];
+}
+
+- (void)streamDidClose
+{
+	self.inputStream.delegate = nil;
+	
+	if ([self isFinishing])
+	{
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf cleanUp];
+		});
+	}
+	
+	self.inputStream = nil;
 }
 
 //
@@ -637,10 +673,6 @@ static void *queueContext = @"internalQueue";
 
 - (void)cleanUp
 {
-	self.inputStream.delegate = nil;
-	[self.inputStream invalidateAndCancel];
-	self.inputStream = nil;
-	
 	//
 	// Close the audio file strea,
 	//
@@ -804,9 +836,7 @@ static void *queueContext = @"internalQueue";
 	//
 	// Close the current input stream
 	//
-	self.inputStream.delegate = nil;
-	[self.inputStream invalidateAndCancel];
-	self.inputStream = nil;
+	[self closeInputStream];
 	
 	err = AudioQueueFlush(audioQueue);
 	
@@ -1072,8 +1102,10 @@ static void *queueContext = @"internalQueue";
 		self.state = AudioStreamerStateStopped;
 		self.stopReason = AudioStreamerStopReasonUserAction;
 		
-		dispatch_sync(internalQueue, ^{
-			[self cleanUp];
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf closeInputStream];
 		});
 	}
 	
@@ -1134,7 +1166,9 @@ static void *queueContext = @"internalQueue";
 			return;
 		}
 		
-		if (seekByteOffset == 0 && !self.fileLength && aStream.expectedContentLength > 0)
+		if (seekByteOffset == 0 &&
+			!self.fileLength &&
+			aStream.expectedContentLength > 0)
 		{
 			self.fileLength = aStream.expectedContentLength;
 		}
@@ -1143,7 +1177,7 @@ static void *queueContext = @"internalQueue";
 	UInt8 bytes[kAQDefaultBufSize];
 	CFIndex length;
 	
-	if ([self isFinishing] || ![aStream hasBytesAvailable])
+	if (!audioFileStream || [self isFinishing] || ![aStream hasBytesAvailable])
 	{
 		return;
 	}
@@ -1864,7 +1898,7 @@ static void *queueContext = @"internalQueue";
 						__weak AudioStreamer *weakSelf = self;
 						
 						dispatch_async(internalQueue, ^{
-							[weakSelf cleanUp];
+							[weakSelf closeInputStream];
 						});
 					}
 				}
