@@ -336,12 +336,21 @@ static void *queueContext = @"internalQueue";
 		NSLog(@"%@", [AudioStreamer stringForErrorCode:anErrorCode]);
 	}
 	
-	if (self.state == AudioStreamerStatePlaying ||
+	if (self.state == AudioStreamerStateWaitingForData ||
+		self.state == AudioStreamerStatePlaying ||
 		self.state == AudioStreamerStatePaused ||
 		self.state == AudioStreamerStateBuffering)
 	{
 		self.state = AudioStreamerStateStopping;
 		self.stopReason = AudioStreamerStopReasonError;
+		
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[weakSelf stop];
+		});
+		
+		/*
 		AudioQueueStop(audioQueue, true);
 		
 		__weak AudioStreamer *weakSelf = self;
@@ -349,6 +358,7 @@ static void *queueContext = @"internalQueue";
 		dispatch_async(internalQueue, ^{
 			[weakSelf closeInputStream];
 		});
+		 */
 	}
 }
 
@@ -660,9 +670,6 @@ static void *queueContext = @"internalQueue";
 			NSLog(@"AudioStreamer problem setting audio session active: %@", error.debugDescription);
 		}
 	#endif
-	
-		// Initialize a semaphore so that we can block on buffers in use.
-		bufferSemaphore = dispatch_semaphore_create(0);
 		
 		if (![self openInputStream])
 		{
@@ -1162,7 +1169,12 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamOpenFailed];
+			__weak AudioStreamer *weakSelf = self;
+			
+			dispatch_async(internalQueue, ^{
+				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamOpenFailed];
+			});
+			
 			return;
 		}
 		
@@ -1172,6 +1184,12 @@ static void *queueContext = @"internalQueue";
 		{
 			self.fileLength = aStream.expectedContentLength;
 		}
+	}
+	
+	if (!bufferSemaphore)
+	{
+		// Initialize a semaphore so that we can block on buffers in use.
+		bufferSemaphore = dispatch_semaphore_create(0);
 	}
 	
 	UInt8 bytes[kAQDefaultBufSize];
@@ -1189,7 +1207,12 @@ static void *queueContext = @"internalQueue";
 	
 	if (length == -1)
 	{
-		[self failWithErrorCode:AudioStreamerErrorCodeAudioDataNotFound];
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioDataNotFound];
+		});
+		
 		return;
 	}
 	
@@ -1204,7 +1227,11 @@ static void *queueContext = @"internalQueue";
 	
 	if (err)
 	{
-		[self failWithErrorCode:AudioStreamerErrorCodeFileStreamParseBytesFailed];
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamParseBytesFailed];
+		});
 		return;
 	}
 }
@@ -1235,7 +1262,11 @@ static void *queueContext = @"internalQueue";
 	
 	if (self.state == AudioStreamerStateWaitingForData)
 	{
-		[self failWithErrorCode:AudioStreamerErrorCodeAudioDataNotFound];
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioDataNotFound];
+		});
 	}
 	
 	//
@@ -1254,7 +1285,11 @@ static void *queueContext = @"internalQueue";
 			
 			if (err)
 			{
-				[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueFlushFailed];
+				__weak AudioStreamer *weakSelf = self;
+				
+				dispatch_async(internalQueue, ^{
+					[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueFlushFailed];
+				});
 				return;
 			}
 		}
@@ -1279,7 +1314,11 @@ static void *queueContext = @"internalQueue";
 	NSLog(@"%@ streamDidFailWithError: %@", self, error.localizedDescription);
 	
 	// Unknown error.
-	[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+	__weak AudioStreamer *weakSelf = self;
+	
+	dispatch_async(internalQueue, ^{
+		[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+	});
 }
 
 //
@@ -1318,7 +1357,11 @@ static void *queueContext = @"internalQueue";
 	
 	if (err)
 	{
-		[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueEnqueueFailed];
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueEnqueueFailed];
+		});
 		return;
 	}
 	
@@ -1348,7 +1391,12 @@ static void *queueContext = @"internalQueue";
 				
 				if (err)
 				{
-					[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+					__weak AudioStreamer *weakSelf = self;
+					
+					dispatch_async(internalQueue, ^{
+						[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+					});
+					
 					return;
 				}
 				
@@ -1362,7 +1410,12 @@ static void *queueContext = @"internalQueue";
 				
 				if (err)
 				{
-					[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+					__weak AudioStreamer *weakSelf = self;
+					
+					dispatch_async(internalQueue, ^{
+						[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+					});
+					
 					return;
 				}
 			}
@@ -1401,7 +1454,12 @@ static void *queueContext = @"internalQueue";
 	
 	if (err)
 	{
-		[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueCreationFailed];
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueCreationFailed];
+		});
+		
 		return;
 	}
 	
@@ -1411,7 +1469,11 @@ static void *queueContext = @"internalQueue";
 	
 	if (err)
 	{
-		[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueAddListenerFailed];
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueAddListenerFailed];
+		});
 		return;
 	}
 	
@@ -1463,7 +1525,12 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueBufferAllocationFailed];
+			__weak AudioStreamer *weakSelf = self;
+			
+			dispatch_async(internalQueue, ^{
+				[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueBufferAllocationFailed];
+			});
+			
 			return;
 		}
 	}
@@ -1524,7 +1591,11 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+			__weak AudioStreamer *weakSelf = self;
+			
+			dispatch_async(internalQueue, ^{
+				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+			});
 			return;
 		}
 		
@@ -1543,7 +1614,11 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+			__weak AudioStreamer *weakSelf = self;
+			
+			dispatch_async(internalQueue, ^{
+				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+			});
 			return;
 		}
 		
@@ -1560,7 +1635,11 @@ static void *queueContext = @"internalQueue";
 			
 			if (err)
 			{
-				[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+				__weak AudioStreamer *weakSelf = self;
+				
+				dispatch_async(internalQueue, ^{
+					[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+				});
 				return;
 			}
 		}
@@ -1574,7 +1653,12 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+			__weak AudioStreamer *weakSelf = self;
+			
+			dispatch_async(internalQueue, ^{
+				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+			});
+			
 			return;
 		}
 		
@@ -1584,7 +1668,13 @@ static void *queueContext = @"internalQueue";
 		if (err)
 		{
 			free(formatList);
-			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+			
+			__weak AudioStreamer *weakSelf = self;
+			
+			dispatch_async(internalQueue, ^{
+				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
+			});
+			
 			return;
 		}
 
@@ -1686,7 +1776,11 @@ static void *queueContext = @"internalQueue";
 			
 			if (packetSize > packetBufferSize)
 			{
-				[self failWithErrorCode:AudioStreamerErrorCodeAudioBufferTooSmall];
+				__weak AudioStreamer *weakSelf = self;
+				
+				dispatch_async(internalQueue, ^{
+					[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioBufferTooSmall];
+				});
 			}
 
 			bufSpaceRemaining = packetBufferSize - bytesFilled;
@@ -1813,7 +1907,12 @@ static void *queueContext = @"internalQueue";
 	
 	if (bufIndex == -1)
 	{
-		[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueBufferMismatch];
+		__weak AudioStreamer *weakSelf = self;
+		
+		dispatch_async(internalQueue, ^{
+			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueBufferMismatch];
+		});
+		
 		dispatch_semaphore_signal(bufferSemaphore);
 		return;
 	}
@@ -1840,7 +1939,12 @@ static void *queueContext = @"internalQueue";
 				
 				if (err)
 				{
-					[self failWithErrorCode:AudioStreamerErrorCodeAudioQueuePauseFailed];
+					__weak AudioStreamer *weakSelf = self;
+					
+					dispatch_async(internalQueue, ^{
+						[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueuePauseFailed];
+					});
+					
 					return;
 				}
 				
