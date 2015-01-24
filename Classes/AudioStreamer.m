@@ -26,7 +26,6 @@
 #import <AVFoundation/AVFoundation.h>
 #endif
 
-#import "V77AudioInputStream.h"
 #import "V77SSLManager.h"
 
 #define BitRateEstimationMaxPackets 5000
@@ -36,16 +35,21 @@ NSString * const ASStatusChangedNotification = @"ASStatusChangedNotification";
 NSString * const ASAudioSessionInterruptionOccuredNotification = @"ASAudioSessionInterruptionOccuredNotification";
 
 static const char * internalQueueToken = "com.voodoo77.AudioStreamerInternal";
+static const char * streamQueueToken = "com.voodoo77.AudioStreamerStream";
 
-@interface AudioStreamer () <V77AudioInputStreamDelegate>
+@interface AudioStreamer ()
 {
 	dispatch_semaphore_t bufferSemaphore;
+	dispatch_semaphore_t restartSemaphore;
 	dispatch_queue_t internalQueue;
+	dispatch_queue_t streamQueue;
 }
 
+@property (nonatomic, assign, readwrite) CFHTTPAuthenticationRef authentication;
+@property (nonatomic, assign, readwrite) AudioStreamerBufferReason bufferReason;
 @property (nonatomic, assign, readwrite) NSInteger cacheBytesRead;
+@property (nonatomic, assign, readwrite) CFMutableDictionaryRef credentials;
 @property (nonatomic, assign, readwrite) AudioStreamerErrorCode errorCode;
-@property (nonatomic, strong, readwrite) V77AudioInputStream *inputStream;
 @property (nonatomic, assign, readwrite) NSUInteger lastCacheBytesProgress;
 @property (nonatomic, assign, readwrite) AudioStreamerState lastState;
 @property (nonatomic, assign, readwrite) AudioStreamerState state;
@@ -62,6 +66,8 @@ static const char * internalQueueToken = "com.voodoo77.AudioStreamerInternal";
 	buffer:(AudioQueueBufferRef)inBuffer;
 - (void)handlePropertyChangeForQueue:(AudioQueueRef)inAQ
 	propertyID:(AudioQueuePropertyID)inID;
+- (void)handleReadFromStream:(CFReadStreamRef)aStream
+				   eventType:(CFStreamEventType)eventType;
 
 #if TARGET_OS_IPHONE
 - (void)handleInterruptionChangeToState:(NSNotification *)notification;
@@ -156,11 +162,20 @@ static void ASAudioQueueIsRunningCallback(void *inUserData, AudioQueueRef inAQ, 
 	[streamer handlePropertyChangeForQueue:inAQ propertyID:inID];
 }
 
+static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType eventType, void *inClientInfo)
+{
+	AudioStreamer *streamer = (__bridge AudioStreamer *)inClientInfo;
+	
+	[streamer handleReadFromStream:aStream eventType:eventType];
+}
+
 static void *queueContext = @"internalQueue";
 
 @implementation AudioStreamer
 
 @synthesize bitRate;
+@synthesize httpHeaders;
+@synthesize fileExtension;
 
 //
 // init
@@ -179,10 +194,29 @@ static void *queueContext = @"internalQueue";
 	return self;
 }
 
+//
+// initWithURL
+//
+// Convenience init method for the object.
+//
+- (instancetype)initWithURL:(NSURL *)aURL
+{
+	self = [super init];
+	if (self != nil)
+	{
+		_url = aURL;
+		
+		[self setup];
+	}
+	return self;
+}
+
 - (void)setup
 {
 	internalQueue = dispatch_queue_create(internalQueueToken, DISPATCH_QUEUE_SERIAL);
 	dispatch_queue_set_specific(internalQueue, queueContext, (void *)queueContext, nil);
+	
+	streamQueue = dispatch_queue_create(streamQueueToken, DISPATCH_QUEUE_SERIAL);
 	
 	_mediaType = AudioStreamMediaTypeMusic;
 	_playbackRate = 1.0;
@@ -201,11 +235,8 @@ static void *queueContext = @"internalQueue";
 {
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
 	[self stop];
-}
-
-- (NSURL *)url
-{
-	return self.inputStream.urlRequest.URL;
+	_url = nil;
+	fileExtension = nil;
 }
 
 //
@@ -343,22 +374,7 @@ static void *queueContext = @"internalQueue";
 	{
 		self.state = AudioStreamerStateStopping;
 		self.stopReason = AudioStreamerStopReasonError;
-		
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(dispatch_get_main_queue(), ^{
-			[weakSelf stop];
-		});
-		
-		/*
 		AudioQueueStop(audioQueue, true);
-		
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf closeInputStream];
-		});
-		 */
 	}
 }
 
@@ -381,6 +397,15 @@ static void *queueContext = @"internalQueue";
 			self.lastState = self.state;
 			_state = aStatus;
 		}
+	}
+}
+
+- (void)setBufferReason:(AudioStreamerBufferReason)bufferReason
+{
+	if (_bufferReason != bufferReason)
+	{
+		NSLog(@"Buffer Reason changed from %lu to %lu", _bufferReason, bufferReason);
+		_bufferReason = bufferReason;
 	}
 }
 
@@ -537,69 +562,132 @@ static void *queueContext = @"internalQueue";
 	return fileTypeHint;
 }
 
-- (BOOL)openInputStream
+//
+// openReadStream
+//
+// Open the audioFileStream to parse data and the fileHandle as the data
+// source.
+//
+- (BOOL)openReadStream
 {
-	NSDictionary *headers = nil;
+	NSAssert(stream == nil, @"Download stream already initialized");
 	
-	if (self.fileLength > 0 && seekByteOffset > 0)
+	if (!self.url)
 	{
-		headers = @{@"Range" : [NSString stringWithFormat:@"bytes=%ld-%ld", seekByteOffset, self.fileLength]};
-		discontinuous = YES;
+		return NO;
 	}
 	
-	NSURLSessionConfiguration *configuration = [[self.delegate sessionConfigurationForAudioStreamer:self] copy];
-	NSMutableURLRequest *request = [[self.delegate URLRequestForCurrentPlayableItemWithResourceType:AudioStreamerResourceTypeNotSet] mutableCopy];
-	
-	[headers enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
-		[request setValue:value forHTTPHeaderField:key];
-	}];
-	
-	if (request)
+	if (!self.url.isFileURL)
 	{
-		V77AudioInputStream *inputStream = [V77AudioInputStream audioInputStreamWithURLRequest:request
-																				 configuration:configuration];
-		inputStream.delegate = self;
+		//
+		// Create the HTTP GET request
+		//
+		CFHTTPMessageRef message = CFHTTPMessageCreateRequest(NULL, (CFStringRef)@"GET", (__bridge CFURLRef)self.url, kCFHTTPVersion1_1);
 		
-		self.state = AudioStreamerStateWaitingForData;
+		//
+		// If we are creating this request to seek to a location, set the
+		// requested byte range in the headers.
+		//
+		if (self.fileLength > 0 && seekByteOffset > 0)
+		{
+			CFHTTPMessageSetHeaderFieldValue(message,
+											 CFSTR("Range"),
+											 (__bridge CFStringRef)[NSString stringWithFormat:@"bytes=%ld-%ld", (long)seekByteOffset, (long)self.fileLength]);
+			discontinuous = YES;
+		}
 		
-		[inputStream resume];
+		if (!self.authentication)
+		{
+			CFStringRef authString = (__bridge CFStringRef)([[[NSString stringWithFormat:@"%@:%@", self.username, self.password]
+															  dataUsingEncoding:NSUTF8StringEncoding]
+															 base64EncodedStringWithOptions:NSDataBase64Encoding64CharacterLineLength]);
+			CFStringRef authValue = (__bridge CFStringRef)([NSString stringWithFormat:@"Basic %@", authString]);
+			
+			CFHTTPMessageSetHeaderFieldValue(message, CFSTR("Authorization"), authValue);
+		}
 		
-		self.inputStream = inputStream;
+		//
+		// Create the read stream that will receive data from the HTTP request
+		//
+		stream = CFReadStreamCreateForHTTPRequest(NULL, message);
+		CFRelease(message);
 		
-		return YES;
+		//
+		// Enable stream redirection
+		//
+		if (CFReadStreamSetProperty(stream,
+									kCFStreamPropertyHTTPShouldAutoredirect,
+									kCFBooleanTrue) == false)
+		{
+			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamSetPropertyFailed];
+			return NO;
+		}
+		
+		//
+		// Handle proxies
+		//
+		CFDictionaryRef proxySettings = CFNetworkCopySystemProxySettings();
+		CFReadStreamSetProperty(stream, kCFStreamPropertyHTTPProxy, proxySettings);
+		CFRelease(proxySettings);
+		
+		//
+		// Handle SSL connections
+		//
+		if ([self.url.scheme isEqualToString:@"https"])
+		{
+			if (CFReadStreamSetProperty(stream, kCFStreamSSLLevel, kCFStreamSocketSecurityLevelNegotiatedSSL))
+			{
+				NSDictionary *sslSettings = @{(id)kCFStreamSSLValidatesCertificateChain : (id)kCFBooleanFalse,
+											  (id)kCFStreamPropertyShouldCloseNativeSocket : (id)kCFBooleanTrue,
+											  (id)kCFStreamSSLPeerName : (id)kCFNull};
+				
+				if (!CFReadStreamSetProperty(stream, kCFStreamPropertySSLSettings, (__bridge CFTypeRef)(sslSettings)))
+				{
+					NSLog(@"SSL Property Settings Failed.");
+				}
+			}
+			else
+			{
+				NSLog(@"SSL Enable Failed.");
+			}
+		}
+	}
+	else
+	{
+		stream = CFReadStreamCreateWithFile(kCFAllocatorDefault, (__bridge CFURLRef)self.url);
+		
+		if (!stream)
+		{
+			return NO;
+		}
+		
+		if (self.fileLength > 0 && seekByteOffset > 0)
+		{
+			NSLog(@"Setting seek offset property on stream. seekByteOffset: %li", (long)seekByteOffset);
+			
+			CFNumberRef seekOffset = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &seekByteOffset);
+			CFReadStreamSetProperty(stream, kCFStreamPropertyFileCurrentOffset, seekOffset);
+			CFRelease(seekOffset);
+			
+			discontinuous = YES;
+		}
 	}
 	
-	return NO;
-}
-
-- (void)closeInputStream
-{
-	if (self.inputStream.inputState != V77AudioInputStreamInputStateOpen)
-	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf cleanUp];
-		});
-	}
+	//
+	// We're now ready to receive data
+	//
+	self.state = AudioStreamerStateWaitingForData;
 	
-	[self.inputStream invalidateAndCancel];
-}
-
-- (void)streamDidClose
-{
-	self.inputStream.delegate = nil;
+	CFStreamClientContext context = {0, (__bridge void *)(self), NULL, NULL, NULL};
 	
-	if ([self isFinishing])
-	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf cleanUp];
-		});
-	}
+	CFReadStreamSetClient(stream,
+						  kCFStreamEventHasBytesAvailable | kCFStreamEventErrorOccurred | kCFStreamEventEndEncountered,
+						  ASReadStreamCallback,
+						  &context);
+	CFReadStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+	CFReadStreamOpen(stream);
 	
-	self.inputStream = nil;
+	return YES;
 }
 
 //
@@ -670,16 +758,110 @@ static void *queueContext = @"internalQueue";
 			NSLog(@"AudioStreamer problem setting audio session active: %@", error.debugDescription);
 		}
 	#endif
+	
+		// Initialize a semaphore so that we can block on buffers in use.
+		bufferSemaphore = dispatch_semaphore_create(0);
 		
-		if (![self openInputStream])
+		if (![self openReadStream])
 		{
 			[self cleanUp];
+			return;
 		}
+		
+		//
+		// Process the run loop until playback is finished or failed.
+		//
+		BOOL isRunning = YES;
+		
+		do
+		{
+			isRunning = [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+												 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
+			
+			if (seekWasRequested)
+			{
+				[self internalSeekToTime:requestedSeekTime];
+				seekWasRequested = NO;
+			}
+			
+			//
+			// If there are no queued buffers, we need to check here since the
+			// handleBufferCompleteForQueue:buffer: should not change the state
+			// (may not enter the synchronized section).
+			//
+			
+			if (self.bufferReason == AudioStreamerBufferReasonNone)
+			{
+				if ((buffersUsed == 0 && self.state == AudioStreamerStatePlaying))
+				{
+					self.bufferReason = AudioStreamerBufferReasonInternal;
+				}
+				else if ((self.url.isFileURL &&
+						  self.state == AudioStreamerStatePlaying &&
+						  (self.cacheBytesProgress < (self.cacheBytesRead + (kAQDefaultBufSize * kNumAQBufs))) &&
+						  self.cacheBytesProgress < self.fileLength))
+				{
+					self.bufferReason = AudioStreamerBufferReasonExternal;
+				}
+			}
+			else if (self.state == AudioStreamerStateBuffering &&
+					 self.bufferReason == AudioStreamerBufferReasonExternal)
+			{
+				// I'm not fond of dealing with this case in this way, but... For now it'll do.
+				NSInteger bufferProgressOffset = (self.cacheBytesProgress - self.lastCacheBytesProgress);
+				NSInteger bufferExpected = ((((NSInteger)self.bitRate / 8) * 1024) * 10);
+				
+				if (bufferProgressOffset > bufferExpected ||
+					self.cacheBytesProgress > self.fileLength)
+				{
+					self.bufferReason = AudioStreamerBufferReasonNone;
+					
+					err = AudioQueueStart(audioQueue, NULL);
+					
+					if (err)
+					{
+						[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+						return;
+					}
+					
+					self.state = AudioStreamerStatePlaying;
+				}
+			}
+			
+			if (self.state == AudioStreamerStatePlaying &&
+				self.bufferReason != AudioStreamerBufferReasonNone)
+			{
+				err = AudioQueuePause(audioQueue);
+				
+				if (err)
+				{
+					[self failWithErrorCode:AudioStreamerErrorCodeAudioQueuePauseFailed];
+					return;
+				}
+				
+				self.state = AudioStreamerStateBuffering;
+				self.lastCacheBytesProgress = self.cacheBytesProgress;
+			}
+			
+		} while (isRunning && ![self runLoopShouldExit]);
+		
+		[self cleanUp];
 	}
 }
 
 - (void)cleanUp
 {
+	//
+	// Cleanup the read stream if it is still open
+	//
+	if (stream)
+	{
+		CFReadStreamClose(stream);
+		CFReadStreamUnscheduleFromRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
+		CFRelease(stream);
+		stream = nil;
+	}
+	
 	//
 	// Close the audio file strea,
 	//
@@ -757,8 +939,20 @@ static void *queueContext = @"internalQueue";
 	
 	self.cacheBytesRead = 0;
 	self.lastCacheBytesProgress = 0;
+	self.bufferReason = AudioStreamerBufferReasonNone;
 	
-	self.state = AudioStreamerStateInitialized;
+	self.fileExtension = nil;
+	
+	if (self.state != AudioStreamerStateRestarting)
+	{
+		self.url = nil;
+		self.state = AudioStreamerStateInitialized;
+	}
+	
+	if (restartSemaphore)
+	{
+		dispatch_semaphore_signal(restartSemaphore);
+	}
 }
 
 //
@@ -841,9 +1035,15 @@ static void *queueContext = @"internalQueue";
 	}
 
 	//
-	// Close the current input stream
+	// Close the current read straem
 	//
-	[self closeInputStream];
+	if (stream)
+	{
+		CFReadStreamClose(stream);
+		CFReadStreamUnscheduleFromRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
+		CFRelease(stream);
+		stream = nil;
+	}
 	
 	err = AudioQueueFlush(audioQueue);
 	
@@ -870,7 +1070,7 @@ static void *queueContext = @"internalQueue";
 	// Re-open the file stream. It will request a byte-range starting at
 	// seekByteOffset.
 	//
-	[self openInputStream];
+	[self openReadStream];
 }
 
 //
@@ -886,16 +1086,6 @@ static void *queueContext = @"internalQueue";
 {
 	requestedSeekTime = newSeekTime;
 	seekWasRequested = YES;
-	
-	if (self.state != AudioStreamerStateInitialized)
-	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf internalSeekToTime:requestedSeekTime];
-			seekWasRequested = NO;
-		});
-	}
 }
 
 //
@@ -910,7 +1100,7 @@ static void *queueContext = @"internalQueue";
 	
 	if ((sampleRate > 0) &&
 		(self.state == AudioStreamerStateStopping || ![self isFinishing]) &&
-		audioQueue && self.inputStream)
+		audioQueue && stream)
 	{
 		if (self.state != AudioStreamerStatePlaying &&
 			self.state != AudioStreamerStatePaused &&
@@ -1039,8 +1229,6 @@ static void *queueContext = @"internalQueue";
 {
 	if (self.state == AudioStreamerStatePlaying || self.state == AudioStreamerStateStopping)
 	{
-		[self.inputStream suspend];
-		
 		err = AudioQueuePause(audioQueue);
 		
 		if (err)
@@ -1053,7 +1241,7 @@ static void *queueContext = @"internalQueue";
 	}
 	else if (self.state == AudioStreamerStatePaused || self.state == AudioStreamerStateBuffering)
 	{
-		[self.inputStream resume];
+		self.bufferReason = AudioStreamerBufferReasonNone;
 		
 		err = AudioQueueStart(audioQueue, NULL);
 		
@@ -1108,12 +1296,6 @@ static void *queueContext = @"internalQueue";
 	{
 		self.state = AudioStreamerStateStopped;
 		self.stopReason = AudioStreamerStopReasonUserAction;
-		
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf closeInputStream];
-		});
 	}
 	
 	seekWasRequested = NO;
@@ -1124,25 +1306,123 @@ static void *queueContext = @"internalQueue";
 	}
 }
 
-- (NSInteger)knownContentLengthForStream:(V77AudioInputStream *)stream
+- (void)handleReadFromStream:(CFReadStreamRef)aStream eventType:(CFStreamEventType)eventType
 {
-	return self.fileLength;
-}
-
-- (BOOL)streamShouldWaitForDataFromDisk:(V77AudioInputStream *)stream currentRequest:(NSURLRequest **)currentRequest
-{
-	NSURLRequest *request = [self.delegate URLRequestForCurrentPlayableItemWithResourceType:AudioStreamerResourceTypeNetwork];
-	
-	if (request)
+	if (aStream != stream)
 	{
-		*currentRequest = [request copy];
+		//
+		// Ignore messages from old streams
+		//
+		return;
 	}
 	
-	return NO;
+	switch (eventType)
+	{
+		case kCFStreamEventHasBytesAvailable:
+		{
+			[self streamHasBytesAvailable:aStream];
+			break;
+		}
+		case kCFStreamEventEndEncountered:
+		{
+			[self endEncounteredOnStream:aStream];
+			break;
+		}
+		case kCFStreamEventErrorOccurred:
+		{
+			[self errorOccurredOnStream:aStream];
+			break;
+		}
+		default:
+			break;
+	}
 }
 
-- (void)streamHasBytesAvailable:(V77AudioInputStream *)aStream
+- (void)streamHasBytesAvailable:(CFReadStreamRef)aStream
 {
+	if (!httpHeaders && !self.url.isFileURL)
+	{
+		CFTypeRef message = CFReadStreamCopyProperty(aStream, kCFStreamPropertyHTTPResponseHeader);
+		httpHeaders = (__bridge NSDictionary *)CFHTTPMessageCopyAllHeaderFields((CFHTTPMessageRef)message);
+		CFRelease(message);
+		
+		NSURL *finalUrl = CFBridgingRelease(CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPFinalURL));
+		
+		if ([finalUrl.scheme isEqualToString:@"https"])
+		{
+			if (![finalUrl.scheme isEqualToString:self.url.scheme] ||
+				![finalUrl.host isEqualToString:self.url.host])
+			{
+				// We redirected and must close out the stream and start over.
+				// If we don't start the stream on an SSL connection and then try
+				// to validate we get SSL handshake errors down the line.
+				// So set our URL to the redirected one and try again.
+				
+				self.state = AudioStreamerStateRestarting;
+				
+				restartSemaphore = dispatch_semaphore_create(0);
+				
+				CFReadStreamClose(stream);
+				CFReadStreamUnscheduleFromRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
+				CFRelease(stream);
+				stream = nil;
+				
+				self.url = finalUrl;
+				
+				dispatch_semaphore_wait(restartSemaphore, DISPATCH_TIME_FOREVER);
+				restartSemaphore = nil;
+				
+				__weak AudioStreamer *weakSelf = self;
+				
+				dispatch_async(dispatch_get_main_queue(), ^{
+					weakSelf.errorCode = AudioStreamerErrorCodeNone;
+					weakSelf.state = AudioStreamerStateStartingFileThread;
+					
+					dispatch_async(internalQueue, ^{
+						AudioStreamer *strongSelf = weakSelf;
+						
+						if (strongSelf)
+						{
+							[strongSelf startInternal];
+						}
+					});
+				});
+				return;
+			}
+			
+			SecTrustRef trust = (SecTrustRef)CFReadStreamCopyProperty(stream, kCFStreamPropertySSLPeerTrust);
+			
+			if (trust)
+			{
+				BOOL success = [[V77SSLManager defaultManager] validateServerTrust:trust forHost:finalUrl.host];
+				
+				CFRelease(trust);
+				
+				if (!success)
+				{
+					// Trust validation failed. Kill everything.
+					[self failWithErrorCode:AudioStreamerErrorCodeSSLAuthorizationFailed];
+					return;
+				}
+			}
+			else
+			{
+				// Unable to evaluate trust. Kill everything.
+				[self failWithErrorCode:AudioStreamerErrorCodeSSLAuthorizationFailed];
+				return;
+			}
+		}
+		
+		//
+		// Only read the content length if we seeked to time zero, otherwise
+		// we only have a subset of the total bytes.
+		//
+		if (seekByteOffset == 0 && [httpHeaders objectForKey:@"Content-Length"])
+		{
+			self.fileLength = [[httpHeaders objectForKey:@"Content-Length"] integerValue];
+		}
+	}
+	
 	if (!audioFileStream)
 	{
 		//
@@ -1153,7 +1433,7 @@ static void *queueContext = @"internalQueue";
 		// If you have a fixed file-type, you may want to hardcode this.
 		//
 		AudioFileTypeID fileTypeHint = kAudioFileMP3Type;
-		NSURL *url = aStream.urlRequest.URL;
+		NSURL *url = self.url;
 		
 		if (url.isFileURL)
 		{
@@ -1161,7 +1441,7 @@ static void *queueContext = @"internalQueue";
 		}
 		else
 		{
-			fileTypeHint = [AudioStreamer hintForMIMEType:aStream.MIMEType];
+			//fileTypeHint = [AudioStreamer hintForMIMEType:aStream.MIMEType];
 		}
 		
 		// create an audio file stream parser
@@ -1169,33 +1449,15 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			__weak AudioStreamer *weakSelf = self;
-			
-			dispatch_async(internalQueue, ^{
-				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamOpenFailed];
-			});
-			
+			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamOpenFailed];
 			return;
 		}
-		
-		if (seekByteOffset == 0 &&
-			!self.fileLength &&
-			aStream.expectedContentLength > 0)
-		{
-			self.fileLength = aStream.expectedContentLength;
-		}
-	}
-	
-	if (!bufferSemaphore)
-	{
-		// Initialize a semaphore so that we can block on buffers in use.
-		bufferSemaphore = dispatch_semaphore_create(0);
 	}
 	
 	UInt8 bytes[kAQDefaultBufSize];
 	CFIndex length;
 	
-	if (!audioFileStream || [self isFinishing] || ![aStream hasBytesAvailable])
+	if ([self isFinishing] || !CFReadStreamHasBytesAvailable(stream))
 	{
 		return;
 	}
@@ -1203,16 +1465,11 @@ static void *queueContext = @"internalQueue";
 	//
 	// Read the bytes from the stream
 	//
-	length = [aStream read:bytes length:kAQDefaultBufSize];
+	length = CFReadStreamRead(aStream, bytes, kAQDefaultBufSize);
 	
 	if (length == -1)
 	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioDataNotFound];
-		});
-		
+		[self failWithErrorCode:AudioStreamerErrorCodeAudioDataNotFound];
 		return;
 	}
 	
@@ -1227,16 +1484,11 @@ static void *queueContext = @"internalQueue";
 	
 	if (err)
 	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamParseBytesFailed];
-		});
-		return;
+		[self failWithErrorCode:AudioStreamerErrorCodeFileStreamParseBytesFailed];
 	}
 }
 
-- (void)streamHasEncounteredEOF:(V77AudioInputStream *)aStream
+- (void)endEncounteredOnStream:(CFReadStreamRef)aStream
 {
 	if ([self isFinishing])
 	{
@@ -1262,11 +1514,7 @@ static void *queueContext = @"internalQueue";
 	
 	if (self.state == AudioStreamerStateWaitingForData)
 	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioDataNotFound];
-		});
+		[self failWithErrorCode:AudioStreamerErrorCodeAudioDataNotFound];
 	}
 	
 	//
@@ -1285,11 +1533,7 @@ static void *queueContext = @"internalQueue";
 			
 			if (err)
 			{
-				__weak AudioStreamer *weakSelf = self;
-				
-				dispatch_async(internalQueue, ^{
-					[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueFlushFailed];
-				});
+				[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueFlushFailed];
 				return;
 			}
 		}
@@ -1301,24 +1545,20 @@ static void *queueContext = @"internalQueue";
 	}
 }
 
-- (void)streamDidFailWithError:(NSError *)error
+- (void)errorOccurredOnStream:(CFReadStreamRef)aStream
 {
-	/*
+	CFErrorRef error = CFReadStreamCopyError(aStream);
+	CFIndex eventErrorCode = CFErrorGetCode(error);
+	CFRelease(error);
+	
 	if (eventErrorCode == ENOTCONN)
 	{
 		[self failWithErrorCode:AudioStreamerErrorCodeSocketConnectionFailed];
 		return;
 	}
-	 */
-	
-	NSLog(@"%@ streamDidFailWithError: %@", self, error.localizedDescription);
 	
 	// Unknown error.
-	__weak AudioStreamer *weakSelf = self;
-	
-	dispatch_async(internalQueue, ^{
-		[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
-	});
+	[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
 }
 
 //
@@ -1334,7 +1574,7 @@ static void *queueContext = @"internalQueue";
 //
 - (void)enqueueBuffer
 {
-	if ([self isFinishing] || !self.inputStream)
+	if ([self isFinishing] || stream == 0)
 	{
 		return;
 	}
@@ -1357,11 +1597,7 @@ static void *queueContext = @"internalQueue";
 	
 	if (err)
 	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueEnqueueFailed];
-		});
+		[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueEnqueueFailed];
 		return;
 	}
 	
@@ -1375,10 +1611,14 @@ static void *queueContext = @"internalQueue";
 		// AudioFileStream stays a small amount ahead of the AudioQueue to
 		// avoid an audio glitch playing streaming files on iPhone SDKs < 3.0
 		//
-		if (self.state == AudioStreamerStateEOF || buffersUsed == kNumAQBufs - 1)
+		
+		if (self.state == AudioStreamerStateEOF ||
+			(self.bufferReason != AudioStreamerBufferReasonExternal && (buffersUsed == kNumAQBufs - 1)))
 		{
 			if (self.state == AudioStreamerStateBuffering)
 			{
+				self.bufferReason = AudioStreamerBufferReasonNone;
+				
 				if (self.shouldStartPaused)
 				{
 					self.state = AudioStreamerStatePaused;
@@ -1391,12 +1631,7 @@ static void *queueContext = @"internalQueue";
 				
 				if (err)
 				{
-					__weak AudioStreamer *weakSelf = self;
-					
-					dispatch_async(internalQueue, ^{
-						[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
-					});
-					
+					[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
 					return;
 				}
 				
@@ -1410,12 +1645,7 @@ static void *queueContext = @"internalQueue";
 				
 				if (err)
 				{
-					__weak AudioStreamer *weakSelf = self;
-					
-					dispatch_async(internalQueue, ^{
-						[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
-					});
-					
+					[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
 					return;
 				}
 			}
@@ -1454,12 +1684,7 @@ static void *queueContext = @"internalQueue";
 	
 	if (err)
 	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueCreationFailed];
-		});
-		
+		[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueCreationFailed];
 		return;
 	}
 	
@@ -1469,11 +1694,7 @@ static void *queueContext = @"internalQueue";
 	
 	if (err)
 	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueAddListenerFailed];
-		});
+		[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueAddListenerFailed];
 		return;
 	}
 	
@@ -1525,12 +1746,7 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			__weak AudioStreamer *weakSelf = self;
-			
-			dispatch_async(internalQueue, ^{
-				[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueBufferAllocationFailed];
-			});
-			
+			[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueBufferAllocationFailed];
 			return;
 		}
 	}
@@ -1591,11 +1807,7 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			__weak AudioStreamer *weakSelf = self;
-			
-			dispatch_async(internalQueue, ^{
-				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
-			});
+			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
 			return;
 		}
 		
@@ -1614,11 +1826,7 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			__weak AudioStreamer *weakSelf = self;
-			
-			dispatch_async(internalQueue, ^{
-				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
-			});
+			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
 			return;
 		}
 		
@@ -1635,11 +1843,7 @@ static void *queueContext = @"internalQueue";
 			
 			if (err)
 			{
-				__weak AudioStreamer *weakSelf = self;
-				
-				dispatch_async(internalQueue, ^{
-					[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
-				});
+				[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
 				return;
 			}
 		}
@@ -1653,12 +1857,7 @@ static void *queueContext = @"internalQueue";
 		
 		if (err)
 		{
-			__weak AudioStreamer *weakSelf = self;
-			
-			dispatch_async(internalQueue, ^{
-				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
-			});
-			
+			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
 			return;
 		}
 		
@@ -1668,13 +1867,7 @@ static void *queueContext = @"internalQueue";
 		if (err)
 		{
 			free(formatList);
-			
-			__weak AudioStreamer *weakSelf = self;
-			
-			dispatch_async(internalQueue, ^{
-				[weakSelf failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
-			});
-			
+			[self failWithErrorCode:AudioStreamerErrorCodeFileStreamGetPropertyFailed];
 			return;
 		}
 
@@ -1776,11 +1969,7 @@ static void *queueContext = @"internalQueue";
 			
 			if (packetSize > packetBufferSize)
 			{
-				__weak AudioStreamer *weakSelf = self;
-				
-				dispatch_async(internalQueue, ^{
-					[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioBufferTooSmall];
-				});
+				[self failWithErrorCode:AudioStreamerErrorCodeAudioBufferTooSmall];
 			}
 
 			bufSpaceRemaining = packetBufferSize - bytesFilled;
@@ -1907,12 +2096,7 @@ static void *queueContext = @"internalQueue";
 	
 	if (bufIndex == -1)
 	{
-		__weak AudioStreamer *weakSelf = self;
-		
-		dispatch_async(internalQueue, ^{
-			[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueueBufferMismatch];
-		});
-		
+		[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueBufferMismatch];
 		dispatch_semaphore_signal(bufferSemaphore);
 		return;
 	}
@@ -1929,7 +2113,7 @@ static void *queueContext = @"internalQueue";
 #endif
 	
 	dispatch_semaphore_signal(bufferSemaphore);
-	
+#warning This may be invalid, check it.
 	if (![self isFinishing])
 	{
 		if ((self.state == AudioStreamerStatePlaying) && (buffersUsed == 0))
@@ -1939,11 +2123,7 @@ static void *queueContext = @"internalQueue";
 				
 				if (err)
 				{
-					__weak AudioStreamer *weakSelf = self;
-					
-					dispatch_async(internalQueue, ^{
-						[weakSelf failWithErrorCode:AudioStreamerErrorCodeAudioQueuePauseFailed];
-					});
+					[self failWithErrorCode:AudioStreamerErrorCodeAudioQueuePauseFailed];
 					
 					return;
 				}
@@ -1996,15 +2176,6 @@ static void *queueContext = @"internalQueue";
 				if (isRunning == 0)
 				{
 					self.state = AudioStreamerStateStopped;
-					
-					if (self.stopReason != AudioStreamerStopReasonTemporary)
-					{
-						__weak AudioStreamer *weakSelf = self;
-						
-						dispatch_async(internalQueue, ^{
-							[weakSelf closeInputStream];
-						});
-					}
 				}
 			}
 			else if (self.state == AudioStreamerStateWaitingForQueue)
@@ -2028,22 +2199,12 @@ static void *queueContext = @"internalQueue";
 				
 				self.state = AudioStreamerStatePlaying;
 				
-				__weak AudioStreamer *weakSelf = self;
-				
 				if (self.shouldStartPaused)
 				{
-					dispatch_async(dispatch_get_main_queue(), ^{
-						[weakSelf pause];
-						weakSelf.shouldStartPaused = NO;
-					});
-				}
-				
-				if (seekWasRequested)
-				{
-					dispatch_async(internalQueue, ^{
-						[weakSelf internalSeekToTime:requestedSeekTime];
-						seekWasRequested = NO;
-					});
+					[self pause];
+					self.shouldStartPaused = NO;
+					
+					return;
 				}
 			}
 			else
