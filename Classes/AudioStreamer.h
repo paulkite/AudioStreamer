@@ -138,8 +138,6 @@ typedef NS_ENUM(NSUInteger, AudioStreamPlaybackRate)
 	AudioStreamPlaybackRateTriple
 };
 
-extern NSString * const ASStatusChangedNotification;
-
 @interface AudioStreamer : NSObject
 {
 	//
@@ -189,14 +187,14 @@ extern NSString * const ASStatusChangedNotification;
 #endif
 }
 
-@property (nonatomic, assign, readonly) AudioStreamerErrorCode errorCode;
+@property (readonly) AudioStreamerErrorCode errorCode;
 @property (nonatomic, assign, readwrite) NSInteger fileLength; // Length of the file in bytes
-@property (nonatomic, assign, readonly) AudioStreamerState lastState;
+@property (readonly) AudioStreamerState lastState;
 @property (nonatomic, assign, readwrite) AudioStreamMediaType mediaType;
 @property (nonatomic, assign, readwrite) AudioStreamPlaybackRate playbackRate;
-@property (nonatomic, assign, readonly) AudioStreamerState state;
+@property (readonly) AudioStreamerState state;
 @property (nonatomic, assign, readwrite) BOOL shouldStartPaused;
-@property (nonatomic, assign, readonly) AudioStreamerStopReason stopReason;
+@property (readonly) AudioStreamerStopReason stopReason;
 @property (nonatomic, assign, readonly) AudioStreamerBufferReason bufferReason;
 @property (nonatomic, assign, readonly) NSInteger cacheBytesRead;
 @property (nonatomic, assign, readwrite) NSInteger cacheBytesProgress;
@@ -227,9 +225,3 @@ extern NSString * const ASStatusChangedNotification;
 - (double)calculatedBitRate;
 
 @end
-
-
-
-
-
-
