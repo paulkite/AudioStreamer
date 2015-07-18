@@ -677,9 +677,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			{
 				if (CFReadStreamSetProperty(stream, kCFStreamSSLLevel, kCFStreamSocketSecurityLevelNegotiatedSSL))
 				{
-					NSDictionary *sslSettings = @{(id)kCFStreamSSLValidatesCertificateChain : (id)kCFBooleanFalse,
-												  (id)kCFStreamPropertyShouldCloseNativeSocket : (id)kCFBooleanTrue,
-												  (id)kCFStreamSSLPeerName : (id)kCFNull};
+					NSDictionary *sslSettings = @{(id)kCFStreamSSLValidatesCertificateChain : (id)kCFBooleanTrue};
 					
 					if (!CFReadStreamSetProperty(stream, kCFStreamPropertySSLSettings, (__bridge CFTypeRef)(sslSettings)))
 					{
@@ -1374,75 +1372,6 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		httpHeaders = (__bridge NSDictionary *)CFHTTPMessageCopyAllHeaderFields((CFHTTPMessageRef)message);
 		CFRelease(message);
 		
-		NSURL *finalUrl = CFBridgingRelease(CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPFinalURL));
-		
-		if ([finalUrl.scheme isEqualToString:@"https"])
-		{
-			if (![finalUrl.scheme isEqualToString:self.url.scheme] ||
-				![finalUrl.host isEqualToString:self.url.host])
-			{
-				// We redirected and must close out the stream and start over.
-				// If we don't start the stream on an SSL connection and then try
-				// to validate we get SSL handshake errors down the line.
-				// So set our URL to the redirected one and try again.
-				
-				/*
-				self.state = AudioStreamerStateRestarting;
-				
-				restartSemaphore = dispatch_semaphore_create(0);
-				
-				CFReadStreamClose(stream);
-				CFReadStreamUnscheduleFromRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
-				CFRelease(stream);
-				stream = nil;
-				
-				self.url = finalUrl;
-				
-				dispatch_semaphore_wait(restartSemaphore, DISPATCH_TIME_FOREVER);
-				restartSemaphore = nil;
-				
-				__weak AudioStreamer *weakSelf = self;
-				
-				dispatch_async(dispatch_get_main_queue(), ^{
-					weakSelf.errorCode = AudioStreamerErrorCodeNone;
-					weakSelf.state = AudioStreamerStateStartingFileThread;
-					
-					dispatch_async(internalQueue, ^{
-						AudioStreamer *strongSelf = weakSelf;
-						
-						if (strongSelf)
-						{
-							[strongSelf startInternal];
-						}
-					});
-				});
-				 */
-				return;
-			}
-			
-			SecTrustRef trust = (SecTrustRef)CFReadStreamCopyProperty(stream, kCFStreamPropertySSLPeerTrust);
-			
-			if (trust)
-			{
-				BOOL success = [[V77SSLManager defaultManager] validateServerTrust:trust forHost:finalUrl.host];
-				
-				CFRelease(trust);
-				
-				if (!success)
-				{
-					// Trust validation failed. Kill everything.
-					[self failWithErrorCode:AudioStreamerErrorCodeSSLAuthorizationFailed];
-					return;
-				}
-			}
-			else
-			{
-				// Unable to evaluate trust. Kill everything.
-				[self failWithErrorCode:AudioStreamerErrorCodeSSLAuthorizationFailed];
-				return;
-			}
-		}
-		
 		//
 		// Only read the content length if we seeked to time zero, otherwise
 		// we only have a subset of the total bytes.
@@ -1595,9 +1524,55 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		[self failWithErrorCode:AudioStreamerErrorCodeSocketConnectionFailed];
 		return;
 	}
+    else if (eventErrorCode <= -9800)
+    {
+        [self handleSSLRedirection];
+        return;
+    }
 	
 	// Unknown error.
 	[self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStartFailed];
+}
+
+- (void)handleSSLRedirection
+{
+    CFURLRef finalUrl = (CFURLRef)CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPFinalURL);
+    
+    if (finalUrl)
+    {
+        NSURL *newUrl = [(__bridge NSURL *)(finalUrl) copy];
+        
+        CFRelease(finalUrl);
+        
+        if ([_url.scheme isEqualToString:@"http"] &&
+            [newUrl.scheme isEqualToString:@"https"])
+        {
+            _url = [newUrl copy];
+            
+            if (stream)
+            {
+                CFReadStreamClose(stream);
+                CFRelease(stream);
+                stream = nil;
+            }
+            
+            if (audioQueue)
+            {
+                self.state = AudioStreamerStateStopping;
+                stopReason = AudioStreamerStopReasonTemporary;
+                
+                err = AudioQueueStop(audioQueue, true);
+                
+                if (err)
+                {
+                    [self failWithErrorCode:AudioStreamerErrorCodeAudioQueueStopFailed];
+                    return;
+                }
+            }
+            
+            [self openReadStream];
+        }
+    }
 }
 
 //
