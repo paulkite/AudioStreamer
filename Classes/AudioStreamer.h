@@ -198,6 +198,7 @@ typedef NS_ENUM(NSUInteger, AudioStreamPlaybackRate)
 @property (nonatomic, assign, readonly) AudioStreamerBufferReason bufferReason;
 @property (nonatomic, assign, readonly) NSInteger cacheBytesRead;
 @property (nonatomic, assign, readwrite) NSInteger cacheBytesProgress;
+@property (nonatomic, assign, readonly) NSInteger lastCacheBytesProgress;
 @property (nonatomic, strong, readwrite) NSString *password;
 @property (readonly) double progress;
 @property (readonly) double duration;
@@ -209,6 +210,8 @@ typedef NS_ENUM(NSUInteger, AudioStreamPlaybackRate)
 
 + (AudioFileTypeID)hintForFileExtension:(NSString *)fileExtension;
 + (AudioFileTypeID)hintForMIMEType:(NSString *)mimeType;
++ (NSString *)descriptionForState:(AudioStreamerState)state;
++ (NSString *)descriptionForStopReason:(AudioStreamerStopReason)stopReason;
 
 - (instancetype)initWithURL:(NSURL *)aURL;
 - (void)start;

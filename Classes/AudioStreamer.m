@@ -26,8 +26,6 @@
 #import <AVFoundation/AVFoundation.h>
 #endif
 
-#import "V77SSLManager.h"
-
 #define BitRateEstimationMaxPackets 5000
 #define BitRateEstimationMinPackets 50
 
@@ -51,7 +49,7 @@
 @property (nonatomic, assign, readwrite) NSInteger cacheBytesRead;
 @property (nonatomic, assign, readwrite) CFMutableDictionaryRef credentials;
 @property (readwrite) AudioStreamerErrorCode errorCode;
-@property (nonatomic, assign, readwrite) NSUInteger lastCacheBytesProgress;
+@property (nonatomic, assign, readwrite) NSInteger lastCacheBytesProgress;
 @property (readwrite) AudioStreamerState lastState;
 @property (readwrite) AudioStreamerState state;
 @property (readwrite) AudioStreamerStopReason stopReason;
@@ -218,7 +216,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 - (void)setup
 {
 	_mediaType = AudioStreamMediaTypeMusic;
-	_playbackRate = 1.0;
+	_playbackRate = AudioStreamPlaybackRateNormal;
 	
 	_cacheBytesRead = 0;
 	
@@ -355,7 +353,8 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			// Only set the error once.
 			return;
 		}
-		
+
+        [self willChangeValueForKey:@"errorCode"];
 		errorCode = anErrorCode;
 		
 		if (err)
@@ -380,6 +379,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			stopReason = AudioStreamerStopReasonError;
 			AudioQueueStop(audioQueue, true);
 		}
+        [self didChangeValueForKey:@"errorCode"];
 	}
 }
 
@@ -422,7 +422,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 {
 	if (_bufferReason != bufferReason)
 	{
-		NSLog(@"Buffer Reason changed from %lu to %lu", _bufferReason, bufferReason);
+		NSLog(@"Buffer Reason changed from %lu to %lu", (unsigned long)_bufferReason, (unsigned long)bufferReason);
 		_bufferReason = bufferReason;
 	}
 }
@@ -599,6 +599,34 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	return fileTypeHint;
 }
 
++ (NSString *)descriptionForState:(AudioStreamerState)state
+{
+    switch (state) {
+        case AudioStreamerStateInitialized: return @"AudioStreamerStateInitialized";
+        case AudioStreamerStateStartingFileThread: return @"AudioStreamerStateStartingFileThread";
+        case AudioStreamerStateWaitingForData: return @"AudioStreamerStateWaitingForData";
+        case AudioStreamerStateEOF: return @"AudioStreamerStateEOF";
+        case AudioStreamerStateWaitingForQueue: return @"AudioStreamerStateWaitingForQueue";
+        case AudioStreamerStatePlaying: return @"AudioStreamerStatePlaying";
+        case AudioStreamerStateBuffering: return @"AudioStreamerStateBuffering";
+        case AudioStreamerStateStopping: return @"AudioStreamerStateStopping";
+        case AudioStreamerStateStopped: return @"AudioStreamerStateStopped";
+        case AudioStreamerStatePaused: return @"AudioStreamerStatePaused";
+        case AudioStreamerStateRestarting: return @"AudioStreamerStateRestarting";
+    }
+}
+
++ (NSString *)descriptionForStopReason:(AudioStreamerStopReason)stopReason
+{
+    switch (stopReason) {
+        case AudioStreamerStopReasonNone: return @"AudioStreamerStopReasonNone";
+        case AudioStreamerStopReasonEOF: return @"AudioStreamerStopReasonEOF";
+        case AudioStreamerStopReasonUserAction: return @"AudioStreamerStopReasonUserAction";
+        case AudioStreamerStopReasonError: return @"AudioStreamerStopReasonError";
+        case AudioStreamerStopReasonTemporary: return @"AudioStreamerStopReasonTemporary";
+    }
+}
+
 //
 // openReadStream
 //
@@ -677,7 +705,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			{
 				if (CFReadStreamSetProperty(stream, kCFStreamSSLLevel, kCFStreamSocketSecurityLevelNegotiatedSSL))
 				{
-					NSDictionary *sslSettings = @{(id)kCFStreamSSLValidatesCertificateChain : (id)kCFBooleanTrue};
+					NSDictionary *sslSettings = @{(id)kCFStreamSSLValidatesCertificateChain : (id)kCFBooleanFalse};
 					
 					if (!CFReadStreamSetProperty(stream, kCFStreamPropertySSLSettings, (__bridge CFTypeRef)(sslSettings)))
 					{
@@ -846,6 +874,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 				}
 				
 				self.state = AudioStreamerStateBuffering;
+                self.lastCacheBytesProgress = self.cacheBytesProgress;
 			}
 			
 		} while (isRunning && ![self runLoopShouldExit]);
@@ -952,8 +981,28 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		
 		if (state != AudioStreamerStateRestarting)
 		{
+            fillBufferIndex = 0;
+
+            for (int i = 0; i < kNumAQBufs; ++i)
+            {
+                inuse[i] = NO;
+            }
+
+            buffersUsed = 0;
+            bitRate = 0;
+            dataOffset = 0;
+            audioDataByteCount = 0;
+
+            processedPacketsCount = 0;
+            processedPacketsSizeTotal = 0;
+            requestedSeekTime = 0.0;
+            sampleRate = 0.0;
+            packetDuration = 0.0;
+
 			self.url = nil;
 			self.state = AudioStreamerStateInitialized;
+            
+            lastProgress = 0.0;
 		}
 	}
 }
@@ -1001,8 +1050,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	//
 	// Calculate the byte offset for seeking
 	//
-	seekByteOffset = dataOffset +
-		(newSeekTime / self.duration) * (fileLength - dataOffset);
+	seekByteOffset = (NSInteger)(dataOffset + (newSeekTime / self.duration) * (fileLength - dataOffset));
 		
 	//
 	// Attempt to leave 1 useful packet at the end of the file (although in
@@ -1010,7 +1058,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	//
 	if (seekByteOffset > fileLength - 2 * packetBufferSize)
 	{
-		seekByteOffset = fileLength - 2 * packetBufferSize;
+		seekByteOffset = (NSInteger)(fileLength - 2 * packetBufferSize);
 	}
 	
 	//
@@ -1027,13 +1075,13 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	{
 		UInt32 ioFlags = 0;
 		SInt64 packetAlignedByteOffset;
-		SInt64 seekPacket = floor(newSeekTime / packetDuration);
-		err = AudioFileStreamSeek(audioFileStream, seekPacket, &packetAlignedByteOffset, &ioFlags);
+		SInt64 seekPacket = (SInt64)floor(newSeekTime / packetDuration);
+		err = AudioFileStreamSeek(audioFileStream, seekPacket, &packetAlignedByteOffset, (AudioFileStreamSeekFlags *)&ioFlags);
 		
 		if (!err && !(ioFlags & kAudioFileStreamSeekFlag_OffsetIsEstimated))
 		{
 			seekTime -= ((seekByteOffset - dataOffset) - packetAlignedByteOffset) * 8.0 / calculatedBitRate;
-			seekByteOffset = packetAlignedByteOffset + dataOffset;
+			seekByteOffset = (NSInteger)(packetAlignedByteOffset + dataOffset);
 		}
 	}
 
@@ -1114,7 +1162,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 				state != AudioStreamerStateStopping)
 			{
 				return lastProgress;
-			}
+            }
 			
 			AudioTimeStamp queueTime;
 			Boolean discontinuity;
@@ -1201,7 +1249,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		
 		if (audioQueue)
 		{
-			err = AudioQueueSetParameter(audioQueue, kAudioQueueParam_PlayRate, [self valueForPlaybackRate:self.playbackRate]);
+			err = AudioQueueSetParameter(audioQueue, kAudioQueueParam_PlayRate, (AudioQueueParameterValue)[self valueForPlaybackRate:self.playbackRate]);
 		}
 	}
 }
@@ -1376,9 +1424,9 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		// Only read the content length if we seeked to time zero, otherwise
 		// we only have a subset of the total bytes.
 		//
-		if (seekByteOffset == 0 && [httpHeaders objectForKey:@"Content-Length"])
+		if (seekByteOffset == 0 && httpHeaders[@"Content-Length"])
 		{
-			self.fileLength = [[httpHeaders objectForKey:@"Content-Length"] integerValue];
+			self.fileLength = [httpHeaders[@"Content-Length"] integerValue];
 		}
 	}
 	
@@ -1404,7 +1452,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		}
 		
 		// create an audio file stream parser
-		err = AudioFileStreamOpen((__bridge void *)(self), ASPropertyListenerProc, ASPacketsProc, fileTypeHint, &audioFileStream);
+		err = AudioFileStreamOpen((__bridge void *)(self), (AudioFileStream_PropertyListenerProc)ASPropertyListenerProc, ASPacketsProc, fileTypeHint, &audioFileStream);
 		
 		if (err)
 		{
@@ -1442,7 +1490,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	
 	self.cacheBytesRead += length;
 	
-	err = AudioFileStreamParseBytes(audioFileStream, (unsigned int)length, bytes, discontinuous ? kAudioFileStreamParseFlag_Discontinuity : false);
+	err = AudioFileStreamParseBytes(audioFileStream, (unsigned int)length, bytes, (AudioFileStreamParseFlags)(discontinuous ? kAudioFileStreamParseFlag_Discontinuity : false));
 	
 	if (err)
 	{
@@ -1450,7 +1498,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	}
 }
 
-- (void)endEncounteredOnStream:(CFReadStreamRef)aStream
+- (void)endEncounteredOnStream:(CFReadStreamRef __unused)aStream
 {
 	@synchronized(self)
 	{
@@ -1753,7 +1801,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			
 			if (err == noErr)
 			{
-				err = AudioQueueSetParameter(audioQueue, kAudioQueueParam_PlayRate, [self valueForPlaybackRate:self.playbackRate]);
+				err = AudioQueueSetParameter(audioQueue, kAudioQueueParam_PlayRate, (AudioQueueParameterValue)[self valueForPlaybackRate:self.playbackRate]);
 			}
 		}
 	}
@@ -1807,7 +1855,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 //
 - (void)handlePropertyChangeForFileStream:(AudioFileStreamID)inAudioFileStream
 	fileStreamPropertyID:(AudioFileStreamPropertyID)inPropertyID
-	ioFlags:(UInt32 *)ioFlags
+	ioFlags:(UInt32 __unused *)ioFlags
 {
 	@synchronized(self)
 	{
@@ -1832,11 +1880,11 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 				return;
 			}
 			
-			dataOffset = offset;
+			dataOffset = (NSInteger)offset;
 			
 			if (audioDataByteCount)
 			{
-				fileLength = dataOffset + audioDataByteCount;
+				fileLength = (NSInteger)(dataOffset + audioDataByteCount);
 			}
 		}
 		else if (inPropertyID == kAudioFileStreamProperty_AudioDataByteCount)
@@ -1851,7 +1899,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 				return;
 			}
 			
-			fileLength = dataOffset + audioDataByteCount;
+			fileLength = (NSInteger)(dataOffset + audioDataByteCount);
 		}
 		else if (inPropertyID == kAudioFileStreamProperty_DataFormat)
 		{
@@ -1954,7 +2002,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			// the bitrate (parsed it another way) you can set it on the
 			// class if needed.
 			//
-			bitRate = ~0;
+			bitRate = (UInt32)~0;
 		}
 		
 		// we have successfully read the first packests from the audio stream, so
@@ -2116,10 +2164,10 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 //    inAQ - the queue
 //    inBuffer - the buffer
 //
-- (void)handleBufferCompleteForQueue:(AudioQueueRef)inAQ
+- (void)handleBufferCompleteForQueue:(AudioQueueRef __unused)inAQ
 	buffer:(AudioQueueBufferRef)inBuffer
 {
-	unsigned int bufIndex = -1;
+	unsigned int bufIndex = (unsigned int)-1;
 	for (unsigned int i = 0; i < kNumAQBufs; ++i)
 	{
 		if (inBuffer == audioQueueBuffer[i])
@@ -2184,7 +2232,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 - (void)handlePropertyChange:(NSNumber *)num
 {
 	NSLog(@"handlePropertyChange: %@", num);
-	[self handlePropertyChangeForQueue:NULL propertyID:num.intValue];
+	[self handlePropertyChangeForQueue:NULL propertyID:(AudioQueuePropertyID)num.intValue];
 }
 
 //
@@ -2196,7 +2244,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 //    inAQ - the audio queue
 //    inID - the property ID
 //
-- (void)handlePropertyChangeForQueue:(AudioQueueRef)inAQ
+- (void)handlePropertyChangeForQueue:(AudioQueueRef __unused)inAQ
 	propertyID:(AudioQueuePropertyID)inID
 {
 	@autoreleasepool
@@ -2278,8 +2326,8 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 //
 - (void)handleInterruptionChangeToState:(NSNotification *)notification
 {
-	AVAudioSessionInterruptionType interruptionType = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
-	AVAudioSessionInterruptionOptions options = [notification.userInfo[AVAudioSessionInterruptionOptionKey] unsignedIntegerValue];
+	AVAudioSessionInterruptionType interruptionType = (AVAudioSessionInterruptionType)[notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+	AVAudioSessionInterruptionOptions options = (AVAudioSessionInterruptionOptions)[notification.userInfo[AVAudioSessionInterruptionOptionKey] unsignedIntegerValue];
 	
 	if (interruptionType == AVAudioSessionInterruptionTypeBegan)
 	{ 
