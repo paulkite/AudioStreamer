@@ -361,14 +361,14 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		if (err)
 		{
 			char *errChars = (char *)&err;
-			NSLog(@"%@ err: %c%c%c%c %d\n",
+			CLSNSLog(@"%@ err: %c%c%c%c %d\n",
 				  [AudioStreamer stringForErrorCode:anErrorCode],
 				  errChars[3], errChars[2], errChars[1], errChars[0],
 				  (int)err);
 		}
 		else
 		{
-			NSLog(@"%@", [AudioStreamer stringForErrorCode:anErrorCode]);
+			CLSNSLog(@"%@", [AudioStreamer stringForErrorCode:anErrorCode]);
 		}
 		
 		if (state == AudioStreamerStateWaitingForData ||
@@ -422,7 +422,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 {
 	if (_bufferReason != bufferReason)
 	{
-		NSLog(@"Buffer Reason changed from %lu to %lu", _bufferReason, bufferReason);
+		CLSNSLog(@"Buffer Reason changed from %lu to %lu", _bufferReason, bufferReason);
 		_bufferReason = bufferReason;
 	}
 }
@@ -681,12 +681,12 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 					
 					if (!CFReadStreamSetProperty(stream, kCFStreamPropertySSLSettings, (__bridge CFTypeRef)(sslSettings)))
 					{
-						NSLog(@"SSL Property Settings Failed.");
+						CLSNSLog(@"SSL Property Settings Failed.");
 					}
 				}
 				else
 				{
-					NSLog(@"SSL Enable Failed.");
+					CLSNSLog(@"SSL Enable Failed.");
 				}
 			}
 		}
@@ -701,7 +701,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			
 			if (fileLength > 0 && seekByteOffset > 0)
 			{
-				NSLog(@"Setting seek offset property on stream. seekByteOffset: %li", (long)seekByteOffset);
+				CLSNSLog(@"Setting seek offset property on stream. seekByteOffset: %li", (long)seekByteOffset);
 				
 				CFNumberRef seekOffset = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &seekByteOffset);
 				CFReadStreamSetProperty(stream, kCFStreamPropertyFileCurrentOffset, seekOffset);
@@ -766,7 +766,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 				if (state != AudioStreamerStateStopping &&
 					state != AudioStreamerStateStopped)
 				{
-					NSLog(@"### Not starting audio thread. State code is: %ld", (long)self.state);
+					CLSNSLog(@"### Not starting audio thread. State code is: %ld", (long)self.state);
 				}
 				self.state = AudioStreamerStateInitialized;
 				return;
@@ -783,7 +783,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			
 			if (error)
 			{
-				NSLog(@"AudioStreamer problem setting audio category: %@", error.debugDescription);
+				CLSNSLog(@"AudioStreamer problem setting audio category: %@", error.debugDescription);
 			}
 			else
 			{
@@ -796,7 +796,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			
 			if (error)
 			{
-				NSLog(@"AudioStreamer problem setting audio session active: %@", error.debugDescription);
+				CLSNSLog(@"AudioStreamer problem setting audio session active: %@", error.debugDescription);
 			}
 		#endif
 		
@@ -933,7 +933,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		
 		if (error)
 		{
-			NSLog(@"AudioStreamer problem setting audio session inactive: %@", error.debugDescription);
+			CLSNSLog(@"AudioStreamer problem setting audio session inactive: %@", error.debugDescription);
 		}
 #endif
 		
@@ -1914,7 +1914,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		}
 		else
 		{
-				NSLog(@"Property is %c%c%c%c",
+				CLSNSLog(@"Property is %c%c%c%c",
 					((char *)&inPropertyID)[3],
 					((char *)&inPropertyID)[2],
 					((char *)&inPropertyID)[1],
@@ -2147,7 +2147,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 //  Enable this logging to measure how many buffers are queued at any time.
 //
 #if LOG_QUEUED_BUFFERS
-	NSLog(@"Queued buffers: %ld", buffersUsed);
+	CLSNSLog(@"Queued buffers: %ld", buffersUsed);
 #endif
 	
 	pthread_cond_signal(&queueBufferReadyCondition);
@@ -2183,7 +2183,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 
 - (void)handlePropertyChange:(NSNumber *)num
 {
-	NSLog(@"handlePropertyChange: %@", num);
+	CLSNSLog(@"handlePropertyChange: %@", num);
 	[self handlePropertyChangeForQueue:NULL propertyID:num.intValue];
 }
 
@@ -2259,7 +2259,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 				}
 				else
 				{
-					NSLog(@"AudioQueue changed state in unexpected way.");
+					CLSNSLog(@"AudioQueue changed state in unexpected way.");
 				}
 			}
 		}
@@ -2300,7 +2300,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			
 			if (error)
 			{
-				NSLog(@"AudioStreamer error while setting session to active. ERROR: %@", error.localizedDescription);
+				CLSNSLog(@"AudioStreamer error while setting session to active. ERROR: %@", error.localizedDescription);
 			}
 			
 			if ([self isPaused] && pausedByInterruption)
