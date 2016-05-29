@@ -197,32 +197,28 @@ typedef NS_ENUM(NSUInteger, AudioStreamPlaybackRate)
 @property (readonly) AudioStreamerStopReason stopReason;
 @property (nonatomic, assign, readonly) AudioStreamerBufferReason bufferReason;
 @property (nonatomic, assign, readonly) NSInteger cacheBytesRead;
-@property (nonatomic, assign, readwrite) NSInteger cacheBytesProgress;
-@property (nonatomic, assign, readonly) NSInteger lastCacheBytesProgress;
 @property (nonatomic, strong, readwrite) NSString *password;
 @property (readonly) double progress;
 @property (readonly) double duration;
 @property (readwrite) UInt32 bitRate;
 @property (readonly) NSDictionary *httpHeaders;
-@property (copy,readwrite) NSString *fileExtension;
 @property (nonatomic, strong, readwrite) NSURL *url;
 @property (nonatomic, strong, readwrite) NSString *username;
 
 + (AudioFileTypeID)hintForFileExtension:(NSString *)fileExtension;
-+ (AudioFileTypeID)hintForMIMEType:(NSString *)mimeType;
+
 + (NSString *)descriptionForState:(AudioStreamerState)state;
 + (NSString *)descriptionForStopReason:(AudioStreamerStopReason)stopReason;
 
-- (instancetype)initWithURL:(NSURL *)aURL;
 - (void)start;
 - (void)stop;
 - (void)pause;
 - (BOOL)isPlaying;
 - (BOOL)isPaused;
 - (BOOL)isBuffering;
-- (BOOL)isWaiting;
+
 - (BOOL)isIdle;
-- (BOOL)isAborted; // return YES if streaming halted due to error (AudioStreamerStateStopping + AudioStreamerStopReasonError)
+// return YES if streaming halted due to error (AudioStreamerStateStopping + AudioStreamerStopReasonError)
 - (BOOL)isStopped;
 - (void)seekToTime:(double)newSeekTime;
 - (double)calculatedBitRate;

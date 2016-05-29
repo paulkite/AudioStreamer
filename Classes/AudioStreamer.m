@@ -47,11 +47,9 @@
 @property (nonatomic, assign, readwrite) CFHTTPAuthenticationRef authentication;
 @property (nonatomic, assign, readwrite) AudioStreamerBufferReason bufferReason;
 @property (nonatomic, assign, readwrite) NSInteger cacheBytesRead;
-@property (nonatomic, assign, readwrite) CFMutableDictionaryRef credentials;
 @property (readwrite) AudioStreamerErrorCode errorCode;
-@property (nonatomic, assign, readwrite) NSInteger lastCacheBytesProgress;
 @property (readwrite) AudioStreamerState lastState;
-@property (readwrite) AudioStreamerState state;
+@property (nonatomic, readwrite) AudioStreamerState state;
 @property (readwrite) AudioStreamerStopReason stopReason;
 
 - (void)handlePropertyChangeForFileStream:(AudioFileStreamID)inAudioFileStream
@@ -172,7 +170,6 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 
 @synthesize bitRate;
 @synthesize errorCode;
-@synthesize fileExtension;
 @synthesize fileLength;
 @synthesize lastState;
 @synthesize httpHeaders;
@@ -196,23 +193,6 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	return self;
 }
 
-//
-// initWithURL
-//
-// Convenience init method for the object.
-//
-- (instancetype)initWithURL:(NSURL *)aURL
-{
-	self = [super init];
-	if (self != nil)
-	{
-		_url = aURL;
-		
-		[self setup];
-	}
-	return self;
-}
-
 - (void)setup
 {
 	_mediaType = AudioStreamMediaTypeMusic;
@@ -233,7 +213,6 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
 	[self stop];
 	_url = nil;
-	fileExtension = nil;
 }
 
 //
@@ -282,55 +261,55 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	switch (anErrorCode)
 	{
 		case AudioStreamerErrorCodeNone:
-			return NSLocalizedString(@"No error.", @"");
+			return NSLocalizedString(@"S_No_error", @"");
 		case AudioStreamerErrorCodeFileStreamSetPropertyFailed:
-			return NSLocalizedString(@"File stream set property failed.", @"");
+			return NSLocalizedString(@"S_File_stream_set_property_failed", @"");
 		case AudioStreamerErrorCodeFileStreamGetPropertyFailed:
-			return NSLocalizedString(@"File stream get property failed.", @"");
+			return NSLocalizedString(@"S_File_stream_get_property_failed", @"");
 		case AudioStreamerErrorCodeFileStreamSeekFailed:
-			return NSLocalizedString(@"File stream seek failed.", @"");
+			return NSLocalizedString(@"S_File_stream_seek_failed", @"");
 		case AudioStreamerErrorCodeFileStreamParseBytesFailed:
-			return NSLocalizedString(@"Parse bytes failed.", @"");
+			return NSLocalizedString(@"S_Parse_bytes_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueCreationFailed:
-			return NSLocalizedString(@"Audio queue creation failed.", @"");
+			return NSLocalizedString(@"S_Audio_queue_creation_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueBufferAllocationFailed:
-			return NSLocalizedString(@"Audio buffer allocation failed.", @"");
+			return NSLocalizedString(@"S_Audio_buffer_allocation_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueEnqueueFailed:
-			return NSLocalizedString(@"Queueing of audio buffer failed.", @"");
+			return NSLocalizedString(@"S_Queueing_of_audio_buffer_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueAddListenerFailed:
-			return NSLocalizedString(@"Audio queue add listener failed.", @"");
+			return NSLocalizedString(@"S_Audio_queue_add_listener_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueRemoveListenerFailed:
-			return NSLocalizedString(@"Audio queue remove listener failed.", @"");
+			return NSLocalizedString(@"S_Audio_queue_remove_listener_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueStartFailed:
-			return NSLocalizedString(@"Audio queue start failed.", @"");
+			return NSLocalizedString(@"S_Audio_queue_start_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueBufferMismatch:
-			return NSLocalizedString(@"Audio queue buffers don't match.", @"");
+			return NSLocalizedString(@"S_Audio_queue_buffers_dont_match", @"");
 		case AudioStreamerErrorCodeFileStreamOpenFailed:
-			return NSLocalizedString(@"Open audio file stream failed.", @"");
+			return NSLocalizedString(@"S_Open_audio_file_stream_failed", @"");
 		case AudioStreamerErrorCodeFileStreamCloseFailed:
-			return NSLocalizedString(@"Close audio file stream failed.", @"");
+			return NSLocalizedString(@"S_Close_audio_file_stream_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueDisposeFailed:
-			return NSLocalizedString(@"Audio queue dispose failed.", @"");
+			return NSLocalizedString(@"S_Audio_queue_dispose_failed", @"");
 		case AudioStreamerErrorCodeAudioQueuePauseFailed:
-			return NSLocalizedString(@"Audio queue pause failed.", @"");
+			return NSLocalizedString(@"S_Audio_queue_pause_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueFlushFailed:
-			return NSLocalizedString(@"Audio queue flush failed.", @"");
+			return NSLocalizedString(@"S_Audio_queue_flush_failed", @"");
 		case AudioStreamerErrorCodeAudioDataNotFound:
-			return NSLocalizedString(@"No audio data found.", @"");
+			return NSLocalizedString(@"S_No_audio_data_found", @"");
 		case AudioStreamerErrorCodeGetAudioTimeFailed:
-			return NSLocalizedString(@"Audio queue get current time failed.", @"");
+			return NSLocalizedString(@"S_Audio_queue_get_current_time_failed", @"");
 		case AudioStreamerErrorCodeNetworkConnectionFailed:
-			return NSLocalizedString(@"Network connection failed.", @"");
+			return NSLocalizedString(@"S_Network_connection_failed", @"");
 		case AudioStreamerErrorCodeAudioQueueStopFailed:
-			return NSLocalizedString(@"Audio queue stop failed.", @"");
+			return NSLocalizedString(@"S_Audio_queue_stop_failed", @"");
 		case AudioStreamerErrorCodeAudioStreamerFailed:
-			return NSLocalizedString(@"Audio playback failed.", @"");
+			return NSLocalizedString(@"S_Audio_playback_failed", @"");
 		case AudioStreamerErrorCodeAudioBufferTooSmall:
-			return NSLocalizedString(@"Audio packets are larger than kAQDefaultBufSize.", @"");
+			return NSLocalizedString(@"S_Audio_packets_are_larger_than_buffer_size", @"");
 		case AudioStreamerErrorCodeSocketConnectionFailed:
-			return NSLocalizedString(@"The connection to the Subsonic server failed.", @"");
+			return NSLocalizedString(@"S_The_connection_to_the_Subsonic_server_failed", @"");
 		case AudioStreamerErrorCodeSSLAuthorizationFailed:
-			return NSLocalizedString(@"SSL authorization failed for this connection.", @"");
+			return NSLocalizedString(@"S_SSL_authorization_failed_for_this_connection", @"");
 	}
 	
 	return nil;
@@ -376,7 +355,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			state == AudioStreamerStateBuffering)
 		{
 			self.state = AudioStreamerStateStopping;
-			stopReason = AudioStreamerStopReasonError;
+			self.stopReason = AudioStreamerStopReasonError;
 			AudioQueueStop(audioQueue, true);
 		}
         [self didChangeValueForKey:@"errorCode"];
@@ -395,34 +374,21 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 //
 - (void)setState:(AudioStreamerState)aStatus
 {
-	@synchronized(self)
-	{
-		if (state != aStatus)
-		{
-			self.lastState = state;
-			state = aStatus;
-		}
-	}
-}
-
-//
-// state
-//
-// returns the state value.
-//
-- (AudioStreamerState)state
-{
-	@synchronized(self)
-	{
-		return state;
-	}
+    @synchronized(self)
+    {
+        if (state != aStatus)
+        {
+            self.lastState = state;
+            state = aStatus;
+        }
+    }
 }
 
 - (void)setBufferReason:(AudioStreamerBufferReason)bufferReason
 {
 	if (_bufferReason != bufferReason)
 	{
-		CLSNSLog(@"Buffer Reason changed from %lu to %lu", _bufferReason, bufferReason);
+		CLSNSLog(@"Buffer Reason changed from %lu to %lu", (unsigned long)_bufferReason, (unsigned long)bufferReason);
 		_bufferReason = bufferReason;
 	}
 }
@@ -459,24 +425,6 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 }
 
 //
-// isWaiting
-//
-// returns YES if the AudioStreamer is waiting for a state transition of some
-// kind.
-//
-- (BOOL)isWaiting
-{
-	@synchronized(self)
-	{
-		return ([self isFinishing] ||
-				state == AudioStreamerStateStartingFileThread||
-				state == AudioStreamerStateWaitingForData ||
-				state == AudioStreamerStateWaitingForQueue ||
-				state == AudioStreamerStateBuffering);
-	}
-}
-
-//
 // isIdle
 //
 // returns YES if the AudioStream is in the AS_INITIALIZED state (i.e.
@@ -488,16 +436,6 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 }
 
 //
-// isAborted
-//
-// returns YES if the AudioStream was stopped due to some errror, handled through failWithCodeError.
-//
-- (BOOL)isAborted
-{
-	return (state == AudioStreamerStateStopping && stopReason == AudioStreamerStopReasonError);
-}
-
-//
 // isStopped
 //
 // returns YES if the AudioStream was stopped for any reason.
@@ -505,22 +443,6 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 - (BOOL)isStopped
 {
 	return (state == AudioStreamerStateStopped);
-}
-
-- (void)setStopReason:(AudioStreamerStopReason)aReason
-{
-	if (stopReason != aReason)
-	{
-		stopReason = aReason;
-	}
-}
-
-- (AudioStreamerStopReason)stopReason
-{
-	@synchronized(self)
-	{
-		return stopReason;
-	}
 }
 
 //
@@ -566,32 +488,6 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		fileTypeHint = kAudioFileCAFType;
 	}
 	else if ([fileExtension isEqual:@"aac"])
-	{
-		fileTypeHint = kAudioFileAAC_ADTSType;
-	}
-	
-	return fileTypeHint;
-}
-
-+ (AudioFileTypeID)hintForMIMEType:(NSString *)mimeType
-{
-	AudioFileTypeID fileTypeHint = kAudioFileMP3Type;
-	
-	if ([mimeType isEqualToString:@"audio/vnd.wave"] ||
-		[mimeType isEqualToString:@"audio/wav"])
-	{
-		fileTypeHint = kAudioFileWAVEType;
-	}
-	else if ([mimeType isEqualToString:@"audio/aiff"] ||
-			 [mimeType isEqualToString:@"audio/x-aiff"])
-	{
-		fileTypeHint = kAudioFileAIFFType;
-	}
-	else if ([mimeType isEqualToString:@"audio/mp4"])
-	{
-		fileTypeHint = kAudioFileMPEG4Type;
-	}
-	else if ([mimeType isEqualToString:@"audio/aac"])
 	{
 		fileTypeHint = kAudioFileAAC_ADTSType;
 	}
@@ -842,7 +738,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		//
 		// Process the run loop until playback is finished or failed.
 		//
-		BOOL isRunning = YES;
+		BOOL isRunning;
 		
 		do
 		{
@@ -874,7 +770,6 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 				}
 				
 				self.state = AudioStreamerStateBuffering;
-                self.lastCacheBytesProgress = self.cacheBytesProgress;
 			}
 			
 		} while (isRunning && ![self runLoopShouldExit]);
@@ -974,10 +869,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		seekTime = 0;
 		
 		self.cacheBytesRead = 0;
-		self.lastCacheBytesProgress = 0;
 		self.bufferReason = AudioStreamerBufferReasonNone;
-		
-		self.fileExtension = nil;
 		
 		if (state != AudioStreamerStateRestarting)
 		{
@@ -1107,7 +999,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	// Stop the audio queue
 	//
 	self.state = AudioStreamerStateStopping;
-	stopReason = AudioStreamerStopReasonTemporary;
+	self.stopReason = AudioStreamerStopReasonTemporary;
 	
 	err = AudioQueueStop(audioQueue, true);
 	
@@ -1345,7 +1237,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			}
 			
 			self.state = AudioStreamerStateStopping;
-			stopReason = AudioStreamerStopReasonUserAction;
+			self.stopReason = AudioStreamerStopReasonUserAction;
 			
 			err = AudioQueueStop(audioQueue, true);
 			
@@ -1358,7 +1250,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		else if (![self isIdle])
 		{
 			self.state = AudioStreamerStateStopped;
-			stopReason = AudioStreamerStopReasonUserAction;
+			self.stopReason = AudioStreamerStopReasonUserAction;
 		}
 		
 		seekWasRequested = NO;
@@ -1542,7 +1434,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			if (audioQueue)
 			{
 				self.state = AudioStreamerStateStopping;
-				stopReason = AudioStreamerStopReasonEOF;
+				self.stopReason = AudioStreamerStopReasonEOF;
 				
 				err = AudioQueueStop(audioQueue, false);
 				
@@ -1555,7 +1447,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			else
 			{
 				self.state = AudioStreamerStateStopped;
-				stopReason = AudioStreamerStopReasonEOF;
+				self.stopReason = AudioStreamerStopReasonEOF;
 			}
 		}
 	}
@@ -1607,7 +1499,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
             if (audioQueue)
             {
                 self.state = AudioStreamerStateStopping;
-                stopReason = AudioStreamerStopReasonTemporary;
+                self.stopReason = AudioStreamerStopReasonTemporary;
                 
                 err = AudioQueueStop(audioQueue, true);
                 
