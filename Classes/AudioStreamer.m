@@ -201,6 +201,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 	_cacheBytesRead = 0;
 	
 	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInterruptionChangeToState:) name:AVAudioSessionInterruptionNotification object:nil];
+	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleAudioSessionRouteChange:) name:AVAudioSessionRouteChangeNotification object:nil];
 }
 
 //
@@ -2252,6 +2253,19 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		}
 	}
 }
+
+- (void)handleAudioSessionRouteChange:(NSNotification *)notification
+{
+    AVAudioSessionRouteChangeReason reason = (AVAudioSessionRouteChangeReason)[notification.userInfo[AVAudioSessionRouteChangeReasonKey] integerValue];
+
+    if (reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable && [self isPlaying])
+    {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self pause];
+        });
+    }
+}
+
 #endif
 
 @end
