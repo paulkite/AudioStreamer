@@ -50,7 +50,7 @@
 @property (readwrite) AudioStreamerErrorCode errorCode;
 @property (readwrite) AudioStreamerState lastState;
 @property (nonatomic, readwrite) AudioStreamerState state;
-@property (readwrite) AudioStreamerStopReason stopReason;
+@property (nonatomic, readwrite) AudioStreamerStopReason stopReason;
 
 - (void)handlePropertyChangeForFileStream:(AudioFileStreamID)inAudioFileStream
 	fileStreamPropertyID:(AudioFileStreamPropertyID)inPropertyID
@@ -640,6 +640,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		// We're now ready to receive data
 		//
 		self.state = AudioStreamerStateWaitingForData;
+        self.stopReason = AudioStreamerStopReasonNone;
 		
 		CFStreamClientContext context = {0, (__bridge void *)(self), NULL, NULL, NULL};
 		

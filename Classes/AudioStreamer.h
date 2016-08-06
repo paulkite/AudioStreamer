@@ -192,9 +192,9 @@ typedef NS_ENUM(NSUInteger, AudioStreamPlaybackRate)
 @property (readonly) AudioStreamerState lastState;
 @property (nonatomic, assign, readwrite) AudioStreamMediaType mediaType;
 @property (nonatomic, assign, readwrite) AudioStreamPlaybackRate playbackRate;
-@property (readonly) AudioStreamerState state;
+@property (nonatomic, readonly) AudioStreamerState state;
 @property (nonatomic, assign, readwrite) BOOL shouldStartPaused;
-@property (readonly) AudioStreamerStopReason stopReason;
+@property (nonatomic, readonly) AudioStreamerStopReason stopReason;
 @property (nonatomic, assign, readonly) AudioStreamerBufferReason bufferReason;
 @property (nonatomic, assign, readonly) NSInteger cacheBytesRead;
 @property (nonatomic, strong, readwrite) NSString *password;
