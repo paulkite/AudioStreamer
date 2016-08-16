@@ -1338,7 +1338,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 		
 		if (url.isFileURL)
 		{
-			fileTypeHint = [AudioStreamer hintForFileExtension:[[url.lastPathComponent stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding] pathExtension]];
+			fileTypeHint = [AudioStreamer hintForFileExtension:[[url.lastPathComponent stringByRemovingPercentEncoding] pathExtension]];
 		}
 		else
 		{
