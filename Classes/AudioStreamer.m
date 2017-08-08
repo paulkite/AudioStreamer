@@ -713,7 +713,7 @@ static void ASReadStreamCallback(CFReadStreamRef aStream, CFStreamEventType even
 			}
 			else
 			{
-                dispatch_sync(dispatch_get_main_queue(), ^{
+                dispatch_async(dispatch_get_main_queue(), ^{
                     [[UIApplication sharedApplication] beginReceivingRemoteControlEvents];
                 });
 			}
